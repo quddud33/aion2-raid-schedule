@@ -59,25 +59,6 @@ function keysInRectangle(
   return keys;
 }
 
-/** 표 순서(날짜 위→아래, 각 날은 시간 왼쪽→오른쪽)의 선형 인덱스 — 탐색기 시프트 선택과 동일한 연속 구간 */
-function cellLinearIndex(p: CellPos): number {
-  return p.dayIdx * SLOTS + p.slotIdx;
-}
-
-function keysInRowMajorRange(columns: DayColumn[], a: CellPos, b: CellPos): string[] {
-  const lo = Math.min(cellLinearIndex(a), cellLinearIndex(b));
-  const hi = Math.max(cellLinearIndex(a), cellLinearIndex(b));
-  const keys: string[] = [];
-  for (let L = lo; L <= hi; L++) {
-    const dayIdx = Math.floor(L / SLOTS);
-    const slotIdx = L % SLOTS;
-    const col = columns[dayIdx];
-    if (!col) continue;
-    keys.push(keyForSlot(slotIdx, col.date));
-  }
-  return keys;
-}
-
 export type SlotWho = {
   nickname: string;
   server_name: string;
@@ -132,8 +113,13 @@ export function TimeGrid({
   const dragSelect = useRef(true);
   const dragAnchor = useRef<CellPos | null>(null);
   const dragSnapshot = useRef<Set<string> | null>(null);
-  /** Shift+클릭 시 구간 시작점(마지막으로 Shift 없이 누른 칸 — 탐색기 앵커와 동일) */
+  /** Shift 없이 마지막으로 누른 칸(직사각형 한쪽·체인 끝) */
   const shiftAnchorRef = useRef<CellPos | null>(null);
+  /** 마지막 일반 클릭으로 지정한 기준 칸(Shift 채움/비움 판별) */
+  const shiftDesignatedAnchorRef = useRef<CellPos | null>(null);
+  const shiftBaselineHadSlotRef = useRef(false);
+  /** Shift 키를 누른 세션에서 직사각형 고정 꼭짓점(첫 Shift+클릭 직전의 shiftAnchor) — Shift를 떼면 해제 */
+  const shiftRectOriginRef = useRef<CellPos | null>(null);
 
   const [overlapPopover, setOverlapPopover] = useState<OverlapPopoverState | null>(null);
   const leaveOverlapTimerRef = useRef<number | null>(null);
@@ -199,6 +185,15 @@ export function TimeGrid({
   }, [cancelOverlapClose]);
 
   useEffect(() => () => cancelOverlapClose(), [cancelOverlapClose]);
+
+  useEffect(() => {
+    const onShiftKeyUp = (e: KeyboardEvent) => {
+      if (e.key !== "Shift") return;
+      shiftRectOriginRef.current = null;
+    };
+    window.addEventListener("keyup", onShiftKeyUp);
+    return () => window.removeEventListener("keyup", onShiftKeyUp);
+  }, []);
 
   useEffect(() => {
     if (!overlapPopover) return;
@@ -305,16 +300,34 @@ export function TimeGrid({
       const anchor = shiftAnchorRef.current;
       const cols = columnsRef.current;
       if (anchor && (anchor.dayIdx !== pos.dayIdx || anchor.slotIdx !== pos.slotIdx)) {
-        /** Windows 탐색기처럼: 앵커~클릭 칸 사이(표 읽기 순서 연속)만 선택으로 바꿈 */
-        const rangeKeys = keysInRowMajorRange(cols, anchor, pos);
-        onCellsChange(() => new Set(rangeKeys));
+        if (shiftRectOriginRef.current == null) {
+          shiftRectOriginRef.current = anchor;
+        }
+        const origin = shiftRectOriginRef.current;
+        if (origin) {
+          const designated = shiftDesignatedAnchorRef.current;
+          /** 직사각형 꼭짓점은 origin(Shift 세션 첫 기준), 채움/비움은 직전 칸 anchor 기준 — 예전 로직 */
+          const sameDesignated =
+            designated != null &&
+            designated.dayIdx === anchor.dayIdx &&
+            designated.slotIdx === anchor.slotIdx;
+          const anchorKey = keyForSlot(anchor.slotIdx, cols[anchor.dayIdx]!.date);
+          const selectRect = sameDesignated ? !shiftBaselineHadSlotRef.current : !selected.has(anchorKey);
+          dragSnapshot.current = new Set(selected);
+          dragSelect.current = selectRect;
+          applyRectFromSnapshot(origin, pos, selectRect);
+        }
       }
       shiftAnchorRef.current = pos;
       return;
     }
 
+    shiftRectOriginRef.current = null;
+
     const key = keyForSlot(slotIdx, columnsRef.current[dayIdx]!.date);
     shiftAnchorRef.current = pos;
+    shiftDesignatedAnchorRef.current = pos;
+    shiftBaselineHadSlotRef.current = selected.has(key);
 
     onDragUndoSessionStart?.();
 
@@ -611,14 +624,16 @@ export function TimeGrid({
           있으면 연한 파란 배경에 숫자만 보입니다.
         </p>
         <p>
-          <strong>Shift+클릭</strong>은 Windows 탐색기와 같습니다. <strong>Shift 없이 마지막으로 누른 칸</strong>
-          부터 Shift를 누른 채로 다른 칸을 누르면, 표를 읽는 순서(위쪽 날짜부터, 각 날은{" "}
-          <strong>09:00→24:00</strong> 왼쪽부터)로 그 사이에 있는 <strong>연속 구간만</strong> 가능으로
-          바뀌고, 그 밖에 켜 두었던 칸은 모두 꺼집니다. 다음 Shift는 방금 누른 칸이 새 앵커가 됩니다.
+          <strong>Shift+클릭</strong>으로 다른 칸을 누르면 <strong>직사각형</strong>이 적용됩니다.{" "}
+          <strong>Shift 키를 누른 채 처음 다른 칸을 누를 때</strong>의 칸이 한쪽 꼭짓점으로 고정되고, Shift를
+          떼기 전에 같은 방식으로 또 누르면 <strong>그 고정 칸부터 새로 누른 칸까지</strong> 직사각형이 다시
+          그려집니다. 채움/비움은 마지막 <strong>일반 클릭</strong>으로 찍은 칸이 직전 칸과 같을 때 그때의
+          비움/채움 기준을 쓰고, 아니면 <strong>직전 칸</strong>(연속 Shift면 바로 이전에 누른 칸)의 선택
+          여부를 봅니다. <strong>Shift 키를 떼면</strong> 고정 꼭짓점이 풀리고 다음부터 새 세션입니다.
         </p>
         <p>
-          Shift 없이 드래그하면 기준 칸에서 포인터를 움직이며 <strong>직사각형</strong>으로 선택·해제합니다.
-          당일 <strong>09:00–24:00</strong>만 표시합니다.
+          Shift 없이 드래그하면 기준 칸에서 포인터를 움직이며 같은 방식으로 직사각형을 선택·해제합니다. 당일{" "}
+          <strong>09:00–24:00</strong>만 표시합니다.
         </p>
         <p className="md:hidden">
           <strong>모바일:</strong> 표 아래 <strong>이전·다음 시간</strong> 버튼, 맨 아래{" "}
