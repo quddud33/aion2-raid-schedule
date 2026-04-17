@@ -25,3 +25,34 @@ html.dark body {
   user-select: none;
   -webkit-user-select: none;
 }
+
+/* 모바일에서 가로 스크롤을 잡기 쉽게 — 스크롤바 높이·썸 강조 */
+.slot-grid-scroll {
+  -webkit-overflow-scrolling: touch;
+}
+
+.slot-grid-scroll::-webkit-scrollbar {
+  height: 12px;
+}
+
+.slot-grid-scroll::-webkit-scrollbar-track {
+  border-radius: 9999px;
+  background: rgb(224 242 254 / 0.85);
+}
+
+html.dark .slot-grid-scroll::-webkit-scrollbar-track {
+  background: rgb(30 41 59 / 0.9);
+}
+
+.slot-grid-scroll::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: rgb(56 189 248 / 0.75);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+html.dark .slot-grid-scroll::-webkit-scrollbar-thumb {
+  background: rgb(100 116 139 / 0.85);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}

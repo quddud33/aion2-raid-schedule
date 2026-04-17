@@ -1,4 +1,12 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import type { DayColumn } from "../lib/slots";
 import { slotKey } from "../lib/slots";
@@ -114,6 +122,51 @@ export function TimeGrid({
   const [overlapPopover, setOverlapPopover] = useState<OverlapPopoverState | null>(null);
   const leaveOverlapTimerRef = useRef<number | null>(null);
 
+  const gridScrollRef = useRef<HTMLDivElement>(null);
+  /** 모바일: 가로 스크롤 가능 여부 + 끝 도달 (버튼·가장자리 힌트용) */
+  const [hScroll, setHScroll] = useState({ overflow: false, canLeft: false, canRight: false });
+
+  const updateHScroll = useCallback(() => {
+    const el = gridScrollRef.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    if (max <= 2) {
+      setHScroll({ overflow: false, canLeft: false, canRight: false });
+      return;
+    }
+    setHScroll({
+      overflow: true,
+      canLeft: el.scrollLeft > 2,
+      canRight: el.scrollLeft < max - 2,
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    updateHScroll();
+    const el = gridScrollRef.current;
+    if (!el) return;
+    const onScroll = () => updateHScroll();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const ro =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => updateHScroll()) : null;
+    ro?.observe(el);
+    window.addEventListener("resize", updateHScroll);
+    const t = window.setTimeout(updateHScroll, 0);
+    return () => {
+      window.clearTimeout(t);
+      el.removeEventListener("scroll", onScroll);
+      ro?.disconnect();
+      window.removeEventListener("resize", updateHScroll);
+    };
+  }, [updateHScroll, columns]);
+
+  const scrollGridPage = useCallback((dir: -1 | 1) => {
+    const el = gridScrollRef.current;
+    if (!el) return;
+    const step = Math.max(176, Math.min(Math.floor(el.clientWidth * 0.78), 360));
+    el.scrollBy({ left: dir * step, behavior: "smooth" });
+  }, []);
+
   const cancelOverlapClose = useCallback(() => {
     if (leaveOverlapTimerRef.current != null) {
       window.clearTimeout(leaveOverlapTimerRef.current);
@@ -135,7 +188,12 @@ export function TimeGrid({
     if (!overlapPopover) return;
     const onScroll = () => setOverlapPopover(null);
     window.addEventListener("scroll", onScroll, true);
-    return () => window.removeEventListener("scroll", onScroll, true);
+    const gridEl = gridScrollRef.current;
+    gridEl?.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      gridEl?.removeEventListener("scroll", onScroll);
+    };
   }, [overlapPopover]);
 
   useEffect(() => {
@@ -279,24 +337,69 @@ export function TimeGrid({
   const afternoonSlots = SLOTS - morningSlots;
 
   return (
-    <div className="slot-grid max-w-full overflow-x-auto overscroll-x-contain rounded-2xl border border-sky-200/80 bg-white/80 p-5 shadow-sm backdrop-blur-sm dark:border-slate-600 dark:bg-slate-900/70">
+    <div className="slot-grid max-w-full rounded-2xl border border-sky-200/80 bg-white/80 p-5 shadow-sm backdrop-blur-sm dark:border-slate-600 dark:bg-slate-900/70">
       {scheduleIntro != null && (
         <div className="mb-3 flex flex-wrap items-end justify-between gap-2 border-b border-sky-100/90 pb-3 dark:border-slate-700/90">
           {scheduleIntro}
           <p className="w-full text-[11px] leading-snug text-slate-500 dark:text-slate-400 md:hidden">
-            좁은 화면에서는 표를 <strong className="text-slate-600 dark:text-slate-300">좌우로 스크롤</strong>
-            한 뒤 칸을 탭·드래그하세요. (각 30분 칸은 최소 터치 크기로 넓혀 두었습니다.)
+            표는 <strong className="text-slate-600 dark:text-slate-300">가로로 스크롤</strong>합니다. 아래{" "}
+            <strong className="text-slate-600 dark:text-slate-300">이전·다음</strong> 버튼으로도 옮길 수
+            있으며, 맨 아래 가로 막대를 드래그해도 됩니다.
           </p>
         </div>
       )}
-      <div
-        className={[
-          "inline-grid w-max gap-1",
-          /* 모바일·태블릿 세로: 슬롯을 압축하지 않고 고정 폭 → 가로 스크롤로 선택 */
-          "max-md:[grid-template-columns:minmax(5.5rem,6.75rem)_repeat(30,minmax(2.75rem,2.75rem))]",
-          "md:[grid-template-columns:9.25rem_repeat(30,minmax(1.15rem,1fr))]",
-        ].join(" ")}
-      >
+
+      {hScroll.overflow ? (
+        <div className="mb-2 grid grid-cols-2 gap-2 md:hidden">
+          <button
+            type="button"
+            disabled={!hScroll.canLeft}
+            onClick={() => scrollGridPage(-1)}
+            className="min-h-11 rounded-xl border border-sky-300/90 bg-white px-2 text-sm font-semibold text-sky-900 shadow-sm transition enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-600 dark:bg-slate-800 dark:text-sky-100 dark:disabled:opacity-35"
+          >
+            ◀ 이전 시간
+          </button>
+          <button
+            type="button"
+            disabled={!hScroll.canRight}
+            onClick={() => scrollGridPage(1)}
+            className="min-h-11 rounded-xl border border-sky-300/90 bg-white px-2 text-sm font-semibold text-sky-900 shadow-sm transition enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-600 dark:bg-slate-800 dark:text-sky-100 dark:disabled:opacity-35"
+          >
+            다음 시간 ▶
+          </button>
+        </div>
+      ) : null}
+
+      <div className="relative max-md:rounded-lg">
+        {hScroll.overflow ? (
+          <>
+            <div
+              className={[
+                "pointer-events-none absolute bottom-0 left-0 top-0 z-[1] w-6 bg-gradient-to-r from-white via-white/90 to-transparent dark:from-slate-900 dark:via-slate-900/90 md:hidden",
+                hScroll.canLeft ? "opacity-100" : "opacity-0",
+              ].join(" ")}
+              aria-hidden
+            />
+            <div
+              className={[
+                "pointer-events-none absolute bottom-0 right-0 top-0 z-[1] w-6 bg-gradient-to-l from-white via-white/90 to-transparent dark:from-slate-900 dark:via-slate-900/90 md:hidden",
+                hScroll.canRight ? "opacity-100" : "opacity-0",
+              ].join(" ")}
+              aria-hidden
+            />
+          </>
+        ) : null}
+        <div
+          ref={gridScrollRef}
+          className="slot-grid-scroll max-w-full overflow-x-auto overscroll-x-contain pb-1"
+        >
+          <div
+            className={[
+              "inline-grid w-max gap-1",
+              "max-md:[grid-template-columns:minmax(5.5rem,6.75rem)_repeat(30,minmax(2.75rem,2.75rem))]",
+              "md:[grid-template-columns:9.25rem_repeat(30,minmax(1.15rem,1fr))]",
+            ].join(" ")}
+          >
         <div className="text-[9px] font-medium text-slate-500 dark:text-slate-400">시간 구간</div>
         <div
           className="flex flex-col items-center justify-center rounded-md bg-sky-100/90 px-1 py-1 text-center dark:bg-slate-800/80"
@@ -418,6 +521,8 @@ export function TimeGrid({
             </Fragment>
           );
         })}
+          </div>
+        </div>
       </div>
       {overlapPopover &&
         typeof document !== "undefined" &&
@@ -510,8 +615,9 @@ export function TimeGrid({
           <strong>09:00–24:00</strong>만 표시합니다.
         </p>
         <p className="md:hidden">
-          <strong>모바일:</strong> 시간 칸은 한 줄에 모두 두지 않고{" "}
-          <strong>가로로 스크롤</strong>하면서 고른 뒤 탭하거나 드래그하면 됩니다.
+          <strong>모바일:</strong> 표 아래 <strong>이전·다음 시간</strong> 버튼, 맨 아래{" "}
+          <strong>가로 스크롤바</strong>, 또는 표 위에서 <strong>좌우로 밀기</strong>로 시간대를 옮긴 뒤
+          탭·드래그하면 됩니다.
         </p>
       </div>
     </div>
