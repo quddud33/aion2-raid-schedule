@@ -48,23 +48,84 @@ function buildCombatDisplay(best: string | null, current: string | null): string
   return null;
 }
 
-/** 아툴 캐릭터 HTML의 메인 전투력(#combat-power-main-value). 평문 정규식은 랭킹 % 등 오탐이 나기 쉬움 */
-function extractCombatPowerMainFromHtml(html: string): string | null {
+function numFromCombatDigits(s: string): number {
+  return Number(String(s).replace(/,/g, ""));
+}
+
+/**
+ * 메인 전투력 표시: `id="combat-power-main-value"` 여는 태그 **바로 다음**부터 잠깐만 본다.
+ * 천 단위 쉼표 형식만 채택해 `50`(퍼센트·랭킹 조각) 같은 값은 건너뜀.
+ */
+function extractCommaFormattedAfterMainId(html: string): string | null {
+  const reOpen = /<[\w-]+[^>]*\bid\s*=\s*["']combat-power-main-value["'][^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = reOpen.exec(html)) !== null) {
+    const tail = html.slice(m.index + m[0].length, m.index + m[0].length + 800);
+    const hit = tail.match(/\b(\d{1,3}(?:,\d{3})+)\b/);
+    if (hit?.[1]) {
+      const n = numFromCombatDigits(hit[1]);
+      if (n >= 1_000 && n < 1_000_000_000) return hit[1];
+    }
+  }
+  return null;
+}
+
+/** 한 줄짜리 `...>523,910</...>` 처럼 자식 태그 없이 텍스트만 있는 경우 */
+function extractSimpleTextMainValue(html: string): string | null {
   const re = /id\s*=\s*["']combat-power-main-value["'][^>]*>\s*([^<]+?)\s*</gi;
-  let pick: string | null = null;
-  let pickNum = 0;
+  let best: string | null = null;
+  let bestN = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(html)) !== null) {
     const digits = (m[1] ?? "").replace(/\u00a0/g, " ").replace(/[^\d,]/g, "").trim();
     if (!/^[\d,]+$/.test(digits)) continue;
-    const n = Number(digits.replace(/,/g, ""));
+    const n = numFromCombatDigits(digits);
     if (!Number.isFinite(n) || n < 1) continue;
-    if (n >= pickNum) {
-      pickNum = n;
-      pick = digits;
+    // 쉼표 없는 짧은 숫자(50 등)는 플레이스홀더·오탐 가능성이 커서 제외
+    if (!digits.includes(",") && n < 10_000) continue;
+    if (n >= bestN) {
+      bestN = n;
+      best = digits;
     }
   }
-  return pick;
+  return best;
+}
+
+/** 자식 태그가 있는 경우: 여는 태그 ~ 닫는 태그 안에서 쉼표 숫자 또는 긴 순수 숫자 */
+function extractFromMainValueBlock(html: string): string | null {
+  const re =
+    /<[\w-]+[^>]*\bid\s*=\s*["']combat-power-main-value["'][^>]*>([\s\S]*?)<\/[\w-]+>/gi;
+  let best: string | null = null;
+  let bestN = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const inner = (m[1] ?? "").replace(/<[^>]+>/g, " ");
+    const comma = inner.match(/\b(\d{1,3}(?:,\d{3})+)\b/);
+    if (comma?.[1]) {
+      const n = numFromCombatDigits(comma[1]);
+      if (n > bestN) {
+        bestN = n;
+        best = comma[1];
+      }
+    }
+    const bare = inner.match(/\b(\d{5,7})\b/);
+    if (bare?.[1]) {
+      const n = Number(bare[1]);
+      if (n > bestN) {
+        bestN = n;
+        best = n.toLocaleString("en-US");
+      }
+    }
+  }
+  return best;
+}
+
+function extractPrimaryCombatPower(html: string): string | null {
+  return (
+    extractCommaFormattedAfterMainId(html) ??
+    extractFromMainValueBlock(html) ??
+    extractSimpleTextMainValue(html)
+  );
 }
 
 Deno.serve(async (req: Request) => {
@@ -166,7 +227,7 @@ Deno.serve(async (req: Request) => {
   }
 
   const html = await res.text();
-  const fromMainDiv = extractCombatPowerMainFromHtml(html);
+  const fromMainDiv = extractPrimaryCombatPower(html);
   let combat_power: string | null = fromMainDiv ? fromMainDiv.slice(0, 48) : null;
   let best: string | null = null;
   let current: string | null = null;
@@ -177,12 +238,19 @@ Deno.serve(async (req: Request) => {
     current = parsed.current;
     combat_power = buildCombatDisplay(best, current);
   }
+  // 메인 id 경로 실패 시 레거시가 "50" 같은 짧은 숫자만 주면 저장하지 않음(랭킹·% 오탐)
+  if (combat_power && !fromMainDiv) {
+    const noSlash = !combat_power.includes("/");
+    if (noSlash && !combat_power.includes(",")) {
+      if (numFromCombatDigits(combat_power) < 10_000) combat_power = null;
+    }
+  }
   if (!combat_power) {
     return new Response(
       JSON.stringify({
         ok: false,
         error:
-          "HTML에서 전투력을 찾지 못했습니다. 아툴이 클라이언트만 렌더링하면 fetch로는 부족할 수 있어 npm run aion2tool:power 또는 수동 입력을 사용해 주세요.",
+          "HTML에서 전투력을 안전하게 읽지 못했습니다. #combat-power-main-value 가 응답에 없거나(클라이언트만 렌더), 숫자만 불명확합니다. npm run aion2tool:power 또는 수동 입력을 사용해 주세요.",
       }),
       { status: 200, headers: jsonHeaders },
     );

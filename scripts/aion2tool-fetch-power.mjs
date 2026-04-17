@@ -40,7 +40,10 @@ async function waitForCombatNumbers(page, timeoutMs) {
         const mainEl = document.getElementById("combat-power-main-value");
         if (mainEl) {
           const digits = (mainEl.textContent ?? "").replace(/[^\d,]/g, "").trim();
-          if (/^[\d,]+$/.test(digits)) currentCombat = digits;
+          if (/^[\d,]+$/.test(digits)) {
+            const n = Number(digits.replace(/,/g, ""));
+            if (digits.includes(",") || n >= 10_000) currentCombat = digits;
+          }
         }
         const best = t.match(/달성\s*최고\s*전투력[\s\S]{0,80}?([\d,]+)/);
         if (best) bestCombat = best[1];
