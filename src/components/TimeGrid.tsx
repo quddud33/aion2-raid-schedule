@@ -1,4 +1,5 @@
-import { Fragment, useCallback, useEffect, useRef } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { DayColumn } from "../lib/slots";
 import { slotKey } from "../lib/slots";
 
@@ -55,12 +56,21 @@ export type SlotWho = {
   server_name: string;
 };
 
-function slotHoverTitle(key: string, heat: number, whoList: SlotWho[] | undefined): string {
-  if (whoList && whoList.length > 0) {
-    const lines = whoList.map((p) => `${p.nickname} (${p.server_name})`);
-    return [`슬롯 ${key}`, `겹침 ${whoList.length}명`, ...lines].join("\n");
-  }
-  return heat > 0 ? `${key} · ${heat}명` : key;
+const OVERLAP_LEAVE_MS = 140;
+
+type OverlapPopoverState = {
+  slotKey: string;
+  headline: string;
+  heat: number;
+  who: SlotWho[];
+  anchorCenterX: number;
+  anchorBottom: number;
+  anchorTop: number;
+};
+
+function ariaSlotLabel(key: string, heat: number): string {
+  if (heat > 0) return `시간 칸 ${key}, 겹침 ${heat}명 — 자세한 목록은 포인터를 올리면 표시`;
+  return `시간 칸 ${key}`;
 }
 
 type Props = {
@@ -94,6 +104,58 @@ export function TimeGrid({
   const dragSnapshot = useRef<Set<string> | null>(null);
   /** Shift+클릭 구간의 시작점(직전 클릭 또는 마지막 일반 클릭 칸) */
   const shiftAnchorRef = useRef<CellPos | null>(null);
+
+  const [overlapPopover, setOverlapPopover] = useState<OverlapPopoverState | null>(null);
+  const leaveOverlapTimerRef = useRef<number | null>(null);
+
+  const cancelOverlapClose = useCallback(() => {
+    if (leaveOverlapTimerRef.current != null) {
+      window.clearTimeout(leaveOverlapTimerRef.current);
+      leaveOverlapTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleOverlapClose = useCallback(() => {
+    cancelOverlapClose();
+    leaveOverlapTimerRef.current = window.setTimeout(() => {
+      setOverlapPopover(null);
+      leaveOverlapTimerRef.current = null;
+    }, OVERLAP_LEAVE_MS);
+  }, [cancelOverlapClose]);
+
+  useEffect(() => () => cancelOverlapClose(), [cancelOverlapClose]);
+
+  useEffect(() => {
+    if (!overlapPopover) return;
+    const onScroll = () => setOverlapPopover(null);
+    window.addEventListener("scroll", onScroll, true);
+    return () => window.removeEventListener("scroll", onScroll, true);
+  }, [overlapPopover]);
+
+  useEffect(() => {
+    if (!overlapPopover) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOverlapPopover(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [overlapPopover]);
+
+  const openOverlapPopover = useCallback(
+    (rect: DOMRect, slotKey: string, headline: string, heat: number, who: SlotWho[]) => {
+      cancelOverlapClose();
+      setOverlapPopover({
+        slotKey,
+        headline,
+        heat,
+        who,
+        anchorCenterX: rect.left + rect.width / 2,
+        anchorBottom: rect.bottom,
+        anchorTop: rect.top,
+      });
+    },
+    [cancelOverlapClose],
+  );
 
   const applyRectFromSnapshot = useCallback((anchor: CellPos, current: CellPos, select: boolean) => {
     const cols = columnsRef.current;
@@ -155,6 +217,8 @@ export function TimeGrid({
 
   const onCellPointerDown = (e: React.PointerEvent, dayIdx: number, slotIdx: number) => {
     e.preventDefault();
+    cancelOverlapClose();
+    setOverlapPopover(null);
     const pos: CellPos = { dayIdx, slotIdx };
 
     if (e.shiftKey) {
@@ -284,11 +348,13 @@ export function TimeGrid({
                 const heat = heatCount?.get(key) ?? 0;
                 const showCount = heat > 0;
                 const whoList = whoBySlot?.get(key);
+                const headline = `${col.short} · ${slotLabel(slot)}`;
                 return (
                   <button
                     key={`${col.label}-${slot}`}
                     type="button"
                     aria-pressed={on}
+                    aria-label={ariaSlotLabel(key, heat)}
                     data-slot={key}
                     data-day-index={dayIdx}
                     data-slot-index={slot}
@@ -301,7 +367,17 @@ export function TimeGrid({
                           : "border border-slate-200/90 bg-white/90 hover:border-blue-200 hover:bg-blue-50/50 dark:border-slate-600 dark:bg-slate-800/80 dark:hover:border-blue-900",
                     ].join(" ")}
                     onPointerDown={(e) => onCellPointerDown(e, dayIdx, slot)}
-                    title={slotHoverTitle(key, heat, whoList)}
+                    onPointerEnter={(e) => {
+                      if (heat <= 0 || dragging.current) return;
+                      openOverlapPopover(
+                        (e.currentTarget as HTMLButtonElement).getBoundingClientRect(),
+                        key,
+                        headline,
+                        heat,
+                        whoList ?? [],
+                      );
+                    }}
+                    onPointerLeave={scheduleOverlapClose}
                   >
                     <span
                       className={[
@@ -320,6 +396,59 @@ export function TimeGrid({
           );
         })}
       </div>
+      {overlapPopover &&
+        typeof document !== "undefined" &&
+        createPortal(
+          (() => {
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const half = 120;
+            const pad = 10;
+            const cx = Math.min(
+              Math.max(overlapPopover.anchorCenterX, pad + half),
+              vw - pad - half,
+            );
+            const showAbove =
+              overlapPopover.anchorBottom + 200 > vh && overlapPopover.anchorTop > 88;
+            const top = showAbove ? overlapPopover.anchorTop - 8 : overlapPopover.anchorBottom + 8;
+            const transform = showAbove ? "translate(-50%, -100%)" : "translateX(-50%)";
+            return (
+              <div
+                role="dialog"
+                aria-label={`이 시간 겹침 ${overlapPopover.heat}명`}
+                className="pointer-events-auto fixed z-[300] w-60 max-h-56 overflow-x-hidden overflow-y-auto rounded-xl border border-sky-200/95 bg-white/98 p-3 shadow-xl shadow-sky-900/10 outline-none backdrop-blur-md dark:border-slate-600 dark:bg-slate-900/98 dark:shadow-black/40"
+                style={{ left: cx, top, transform }}
+                onPointerEnter={cancelOverlapClose}
+                onPointerLeave={scheduleOverlapClose}
+              >
+                <p className="border-b border-sky-100 pb-2 text-[11px] font-semibold leading-snug text-slate-800 dark:border-slate-700 dark:text-slate-100">
+                  {overlapPopover.headline}
+                </p>
+                <p className="mt-2 text-[10px] font-medium text-sky-700 dark:text-sky-300">
+                  가능으로 표시된 인원 {overlapPopover.heat}명
+                </p>
+                {overlapPopover.who.length > 0 ? (
+                  <ul className="mt-2 space-y-1.5">
+                    {overlapPopover.who.map((p, i) => (
+                      <li
+                        key={`${overlapPopover.slotKey}-${i}-${p.nickname}`}
+                        className="flex flex-col gap-0.5 rounded-lg bg-sky-50/95 px-2 py-1.5 dark:bg-slate-800/95"
+                      >
+                        <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">
+                          {p.nickname}
+                        </span>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400">{p.server_name}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">표시할 닉네임이 없습니다.</p>
+                )}
+              </div>
+            );
+          })(),
+          document.body,
+        )}
       <div className="mt-3 space-y-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
         <p>
           <strong>실행 취소:</strong> 표에서 칸을 바꾼 뒤 <strong>Ctrl+Z</strong>(Mac은{" "}
@@ -328,7 +457,7 @@ export function TimeGrid({
           <strong>한 번의 실행 취소</strong>로 통째로 되돌아갑니다.
         </p>
         <p>
-          겹침이 있는 칸에 <strong>마우스를 올리면</strong> 닉네임·서버가 툴팁으로 표시됩니다.{" "}
+          겹침이 있는 칸에 <strong>포인터를 올리면</strong> 닉네임·서버 목록이 화면 위쪽 팝업으로 표시됩니다.{" "}
           <strong>숫자</strong>는 그 30분에 가능하다고 적은 인원 수입니다.
         </p>
         <p>
