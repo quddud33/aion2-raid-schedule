@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MatchSummary } from "./components/MatchSummary";
 import { TimeGrid } from "./components/TimeGrid";
-import { AION2TOOL_HOME, buildAion2toolCharUrl } from "./lib/aion2toolCharUrl";
+import { AION2TOOL_HOME, buildAion2toolCharUrl, resolveAion2toolServerId } from "./lib/aion2toolCharUrl";
 import { buildRaidWeekColumns } from "./lib/slots";
 import { supabase, supabaseConfigured } from "./lib/supabase";
 
@@ -63,6 +63,7 @@ export function App() {
   const [darkMode, setDarkMode] = useState(readInitialDark);
   const [myUserId, setMyUserId] = useState<string | null>(null);
   const [myCombatDraft, setMyCombatDraft] = useState("");
+  const [refreshNote, setRefreshNote] = useState<string | null>(null);
   const serverCombatSyncedRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -96,31 +97,100 @@ export function App() {
     return m;
   }, [rows]);
 
-  const loadRows = useCallback(async () => {
-    if (!supabase) return;
-    setLoading(true);
-    setError(null);
+  const fetchRowsFromDb = useCallback(async (): Promise<
+    { ok: true; rows: AvailabilityRow[] } | { ok: false; message: string }
+  > => {
+    if (!supabase) return { ok: false, message: "Supabase가 설정되지 않았습니다." };
     const { data, error: e } = await supabase
       .from("raid_availability")
       .select("*")
       .eq("raid_type", raidType)
       .order("updated_at", { ascending: false });
+    if (e) return { ok: false, message: e.message };
+    const rows = (data ?? []).map((r) => {
+      const row = r as AvailabilityRow;
+      return {
+        ...row,
+        combat_power: row.combat_power ?? null,
+        combat_power_updated_at: row.combat_power_updated_at ?? null,
+      };
+    });
+    return { ok: true, rows };
+  }, [raidType]);
+
+  const loadRows = useCallback(async () => {
+    if (!supabase) return;
+    setLoading(true);
+    setError(null);
+    const r = await fetchRowsFromDb();
     setLoading(false);
-    if (e) {
-      setError(e.message);
+    if (!r.ok) {
+      setError(r.message);
       return;
     }
-    setRows(
-      (data ?? []).map((r) => {
-        const row = r as AvailabilityRow;
-        return {
-          ...row,
-          combat_power: row.combat_power ?? null,
-          combat_power_updated_at: row.combat_power_updated_at ?? null,
-        };
-      }),
-    );
-  }, [raidType]);
+    setRows(r.rows);
+  }, [fetchRowsFromDb]);
+
+  const onRefreshParticipants = useCallback(async () => {
+    if (!supabase) return;
+    setLoading(true);
+    setError(null);
+    setRefreshNote(null);
+    const first = await fetchRowsFromDb();
+    if (!first.ok) {
+      setError(first.message);
+      setLoading(false);
+      return;
+    }
+    setRows(first.rows);
+
+    const { data: u } = await supabase.auth.getUser();
+    const uid = u.user?.id;
+    if (uid) {
+      const mine = first.rows.find((r) => r.user_id === uid);
+      if (mine) {
+        const sid = resolveAion2toolServerId(mine.server_name);
+        if (sid) {
+          const { data: fnData, error: fnErr } = await supabase.functions.invoke("fetch-combat-power", {
+            body: { serverId: sid, nickname: mine.nickname },
+          });
+          if (fnErr) {
+            setRefreshNote(
+              `전투력 자동 갱신을 건너뜁니다 (${fnErr.message}). Supabase에 fetch-combat-power 함수를 배포했는지 확인하거나 수동 입력을 사용해 주세요.`,
+            );
+          } else if (fnData && typeof fnData === "object") {
+            const fd = fnData as { ok?: boolean; error?: string; combat_power?: string };
+            if (fd.ok === true && typeof fd.combat_power === "string" && fd.combat_power.length > 0) {
+              const { error: upErr } = await supabase.from("raid_availability").upsert(
+                {
+                  user_id: uid,
+                  raid_type: raidType,
+                  nickname: mine.nickname,
+                  server_name: mine.server_name,
+                  slots: mine.slots,
+                  combat_power: fd.combat_power.slice(0, 48),
+                  combat_power_updated_at: new Date().toISOString(),
+                  updated_at: mine.updated_at,
+                },
+                { onConflict: "user_id,raid_type" },
+              );
+              if (upErr) setRefreshNote(`DB 반영 실패: ${upErr.message}`);
+              else {
+                const second = await fetchRowsFromDb();
+                if (second.ok) setRows(second.rows);
+                setRefreshNote("전투력을 아툴에서 가져와 반영했습니다.");
+              }
+            } else {
+              setRefreshNote(fd.error ?? "전투력을 페이지에서 찾지 못했습니다.");
+            }
+          }
+        } else {
+          setRefreshNote("서버명이 아툴 목록과 맞지 않아 전투력 자동 갱신을 건너뜁니다.");
+        }
+      }
+    }
+    setLoading(false);
+  }, [fetchRowsFromDb, raidType]);
 
   const beginSlotUndoDragSession = useCallback(() => {
     slotUndoCoalesceRef.current = true;
@@ -580,16 +650,17 @@ export function App() {
             <button
               type="button"
               disabled={loading || !authReady}
-              onClick={() => void loadRows()}
+              title="등록 목록을 불러오고, 본인 행이 있으면 아툴에서 전투력을 자동 조회해 반영합니다."
+              onClick={() => void onRefreshParticipants()}
               className="min-h-[36px] rounded-lg border border-sky-200 bg-white px-3 py-1.5 font-medium text-slate-700 shadow-sm hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
             >
-              {loading ? "불러오는 중…" : "목록 새로고침"}
+              {loading ? "갱신 중…" : "목록·전투력 갱신"}
             </button>
             <span className="hidden text-slate-300 sm:inline dark:text-slate-600" aria-hidden>
               |
             </span>
             <span className="max-w-md leading-relaxed">
-              전투력은{" "}
+              「목록·전투력 갱신」은 DB 목록을 다시 불러오고, 본인이 등록돼 있으면{" "}
               <a
                 href={AION2TOOL_HOME}
                 target="_blank"
@@ -598,12 +669,15 @@ export function App() {
               >
                 아툴
               </a>
-              캐릭터 페이지에서 확인한 뒤, 본인 행에만 입력·반영됩니다. 옆 열의「아툴」은 해당 닉·서버 검색
-              링크입니다.
+              에서 전투력을 자동 조회해 저장합니다(Supabase Edge Function 배포 필요). 실패 시 본인 행에서 수동
+              입력·「전투력 반영」을 쓰면 됩니다. 행의「아툴」은 해당 닉·서버 링크입니다.
             </span>
             <span className="tabular-nums text-slate-500 dark:text-slate-400">{rows.length}명</span>
           </div>
         </div>
+        {refreshNote && (
+          <p className="mt-2 text-xs leading-relaxed text-slate-600 dark:text-slate-400">{refreshNote}</p>
+        )}
         <div className="mt-4 overflow-x-auto">
           <table className="w-full min-w-[640px] border-collapse text-left text-sm">
             <thead>
