@@ -1,0 +1,8 @@
+# Supabase CLI (link / functions deploy) 가 읽는 설정입니다.
+# https://supabase.com/docs/guides/cli/config
+
+[functions.fetch-combat-power]
+# 일부 프로젝트는 Auth JWT 가 ES256 알고리즘인데, Edge 게이트웨이 기본 검증이 이를 지원하지 않아
+# POST 만 401 + "Unsupported JWT algorithm ES256" 이 되는 경우가 있습니다. (OPTIONS 는 200)
+# 이 함수만 게이트 JWT 검증을 끄고, 함수 내부에서 Authorization + auth.getUser() 로 검증합니다.
+verify_jwt = false

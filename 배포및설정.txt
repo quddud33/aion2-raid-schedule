@@ -46,6 +46,9 @@
        npm run deploy:functions
    - 그래도 같은 오류면: 브라우저 **광고 차단**·**회사/학교망**이 supabase 도메인을 막는지,
      `.env` / GitHub Secrets 의 `VITE_SUPABASE_URL` 이 **배포한 프로젝트와 동일한지** 확인합니다.
+   - 대시보드에서 **POST 401** 이고 본문에 **Unsupported JWT algorithm ES256** 이면, Auth JWT 가 ES256 인데
+     Edge 게이트 검증이 막는 경우입니다. 저장소의 `supabase/config.toml` 에서 해당 함수 `verify_jwt = false` 로
+     두었으니 **한 번 더** `npm run deploy:functions` 하면 반영됩니다. (인증은 함수 코드의 getUser() 로 처리)
    - 대시보드에 함수가 있는데도 **「non-2xx status code」**만 보이면: (1) Edge 를 최신으로 `npm run deploy:functions`
      (2) **GitHub Pages 프론트도** 저장소 최신을 main 에 푸시해 Actions 로 다시 빌드·배포 (브라우저가 옛날 JS 를 쓰면
      오류 본문을 읽는 패치·Authorization 헤더가 반영되지 않을 수 있음).
