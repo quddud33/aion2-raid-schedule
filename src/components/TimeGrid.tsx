@@ -67,12 +67,24 @@ type Props = {
   columns: DayColumn[];
   selected: Set<string>;
   onCellsChange: (updater: (prev: Set<string>) => Set<string>) => void;
+  /** 포인터 드래그 시작 — 실행 취소를 드래그 한 번 단위로 묶음 */
+  onDragUndoSessionStart?: () => void;
+  /** 포인터 드래그 종료(버튼 업·캡처 해제 등) */
+  onDragUndoSessionEnd?: () => void;
   heatCount?: Map<string, number>;
   /** 슬롯 키별 겹침 인원(닉·서버) — 호버 툴팁용 */
   whoBySlot?: Map<string, SlotWho[]>;
 };
 
-export function TimeGrid({ columns, selected, onCellsChange, heatCount, whoBySlot }: Props) {
+export function TimeGrid({
+  columns,
+  selected,
+  onCellsChange,
+  onDragUndoSessionStart,
+  onDragUndoSessionEnd,
+  heatCount,
+  whoBySlot,
+}: Props) {
   const columnsRef = useRef(columns);
   columnsRef.current = columns;
 
@@ -101,7 +113,8 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, whoBySlo
     dragging.current = false;
     dragAnchor.current = null;
     dragSnapshot.current = null;
-  }, []);
+    onDragUndoSessionEnd?.();
+  }, [onDragUndoSessionEnd]);
 
   const resolveCellFromPoint = useCallback((clientX: number, clientY: number): CellPos | null => {
     const el = document.elementFromPoint(clientX, clientY);
@@ -159,6 +172,7 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, whoBySlo
     }
 
     shiftAnchorRef.current = pos;
+    onDragUndoSessionStart?.();
 
     (e.currentTarget as HTMLButtonElement).setPointerCapture?.(e.pointerId);
     const key = keyForSlot(slotIdx, columnsRef.current[dayIdx]!.date);
@@ -310,7 +324,8 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, whoBySlo
         <p>
           <strong>실행 취소:</strong> 표에서 칸을 바꾼 뒤 <strong>Ctrl+Z</strong>(Mac은{" "}
           <strong>⌘+Z</strong>)로 직전 변경을 되돌릴 수 있습니다. 입력란에 포커스가 있을 때는 동작하지
-          않습니다.
+          않습니다. <strong>드래그</strong>로 칸을 여러 번 바꿔도, 누르기부터 떼기까지는{" "}
+          <strong>한 번의 실행 취소</strong>로 통째로 되돌아갑니다.
         </p>
         <p>
           겹침이 있는 칸에 <strong>마우스를 올리면</strong> 닉네임·서버가 툴팁으로 표시됩니다.{" "}

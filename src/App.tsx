@@ -49,6 +49,9 @@ export function App() {
   const [server, setServer] = useState("");
   const [mySlots, setMySlots] = useState<Set<string>>(() => new Set());
   const slotUndoStack = useRef<Set<string>[]>([]);
+  /** true: 포인터 드래그 중 — 스택은 첫 실제 변경 직전 상태만 한 번 push */
+  const slotUndoCoalesceRef = useRef(false);
+  const slotUndoDragPushedRef = useRef(false);
   const [rows, setRows] = useState<AvailabilityRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -104,12 +107,30 @@ export function App() {
     setRows((data ?? []) as AvailabilityRow[]);
   }, [raidType]);
 
+  const beginSlotUndoDragSession = useCallback(() => {
+    slotUndoCoalesceRef.current = true;
+    slotUndoDragPushedRef.current = false;
+  }, []);
+
+  const endSlotUndoDragSession = useCallback(() => {
+    slotUndoCoalesceRef.current = false;
+    slotUndoDragPushedRef.current = false;
+  }, []);
+
   const applyMySlots = useCallback((updater: (prev: Set<string>) => Set<string>) => {
     setMySlots((prev) => {
       const next = updater(prev);
       if (setsEqual(prev, next)) return prev;
-      slotUndoStack.current.push(new Set(prev));
-      if (slotUndoStack.current.length > MAX_SLOT_UNDO) slotUndoStack.current.shift();
+      if (slotUndoCoalesceRef.current) {
+        if (!slotUndoDragPushedRef.current) {
+          slotUndoStack.current.push(new Set(prev));
+          slotUndoDragPushedRef.current = true;
+          if (slotUndoStack.current.length > MAX_SLOT_UNDO) slotUndoStack.current.shift();
+        }
+      } else {
+        slotUndoStack.current.push(new Set(prev));
+        if (slotUndoStack.current.length > MAX_SLOT_UNDO) slotUndoStack.current.shift();
+      }
       return next;
     });
   }, []);
@@ -447,6 +468,8 @@ export function App() {
           columns={columns}
           selected={mySlots}
           onCellsChange={applyMySlots}
+          onDragUndoSessionStart={beginSlotUndoDragSession}
+          onDragUndoSessionEnd={endSlotUndoDragSession}
           heatCount={heatCount}
           whoBySlot={whoBySlot}
         />
