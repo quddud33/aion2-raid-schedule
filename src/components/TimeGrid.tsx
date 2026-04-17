@@ -2,27 +2,15 @@ import { Fragment, useCallback, useEffect, useRef } from "react";
 import type { DayColumn } from "../lib/slots";
 import { slotKey } from "../lib/slots";
 
-/** 당일 18:00–24:00 (12칸) + 익일 00:00–00:30만 (01:00–09:00 구간 제외) */
-const EVENING_SLOTS = 12;
-const MORNING_SLOTS = 2;
-const SLOTS = EVENING_SLOTS + MORNING_SLOTS;
+/** 당일 09:00–24:00 (30분 단위, 마지막 23:30) */
+const SLOT_START_MIN = 9 * 60;
+const SLOTS = (24 * 60 - SLOT_START_MIN) / 30;
 
 function keyForSlot(slot: number, columnDate: Date): string {
   const D = new Date(columnDate);
   D.setHours(0, 0, 0, 0);
-  if (slot < EVENING_SLOTS) {
-    const d = new Date(D);
-    d.setHours(18, 0, 0, 0);
-    d.setMinutes(d.getMinutes() + slot * 30);
-    const mins = d.getHours() * 60 + d.getMinutes();
-    return slotKey(d, mins);
-  }
-  const d = new Date(D);
-  d.setDate(d.getDate() + 1);
-  d.setHours(0, 0, 0, 0);
-  d.setMinutes((slot - EVENING_SLOTS) * 30);
-  const mins = d.getHours() * 60 + d.getMinutes();
-  return slotKey(d, mins);
+  const mins = SLOT_START_MIN + slot * 30;
+  return slotKey(D, mins);
 }
 
 function keysForDay(columns: DayColumn[], dayIdx: number): string[] {
@@ -32,15 +20,9 @@ function keysForDay(columns: DayColumn[], dayIdx: number): string[] {
 }
 
 function slotLabel(slot: number): string {
-  if (slot < EVENING_SLOTS) {
-    const total = 18 * 60 + slot * 30;
-    const h = Math.floor(total / 60);
-    const m = total % 60;
-    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-  }
-  const total = (slot - EVENING_SLOTS) * 30;
-  const h = Math.floor(total / 60);
-  const m = total % 60;
+  const mins = SLOT_START_MIN + slot * 30;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
@@ -73,10 +55,9 @@ type Props = {
   selected: Set<string>;
   onCellsChange: (updater: (prev: Set<string>) => Set<string>) => void;
   heatCount?: Map<string, number>;
-  maxHeat?: number;
 };
 
-export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat }: Props) {
+export function TimeGrid({ columns, selected, onCellsChange, heatCount }: Props) {
   const columnsRef = useRef(columns);
   columnsRef.current = columns;
 
@@ -84,6 +65,8 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
   const dragSelect = useRef(true);
   const dragAnchor = useRef<CellPos | null>(null);
   const dragSnapshot = useRef<Set<string> | null>(null);
+  /** Shift+클릭 구간의 시작점(직전 클릭 또는 마지막 일반 클릭 칸) */
+  const shiftAnchorRef = useRef<CellPos | null>(null);
 
   const applyRectFromSnapshot = useCallback((anchor: CellPos, current: CellPos, select: boolean) => {
     const cols = columnsRef.current;
@@ -121,6 +104,7 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
   useEffect(() => {
     const onPointerMove = (e: PointerEvent) => {
       if (!dragging.current || !dragAnchor.current) return;
+      if (e.shiftKey) return;
       const cur = resolveCellFromPoint(e.clientX, e.clientY);
       if (!cur) return;
       applyRectFromSnapshot(dragAnchor.current, cur, dragSelect.current);
@@ -143,13 +127,31 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
 
   const onCellPointerDown = (e: React.PointerEvent, dayIdx: number, slotIdx: number) => {
     e.preventDefault();
+    const pos: CellPos = { dayIdx, slotIdx };
+
+    if (e.shiftKey) {
+      const anchor = shiftAnchorRef.current;
+      if (anchor && (anchor.dayIdx !== pos.dayIdx || anchor.slotIdx !== pos.slotIdx)) {
+        const keys = keysInRectangle(columnsRef.current, anchor.dayIdx, pos.dayIdx, anchor.slotIdx, pos.slotIdx);
+        onCellsChange((prev) => {
+          const next = new Set(prev);
+          for (const k of keys) next.add(k);
+          return next;
+        });
+      }
+      shiftAnchorRef.current = pos;
+      return;
+    }
+
+    shiftAnchorRef.current = pos;
+
     (e.currentTarget as HTMLButtonElement).setPointerCapture?.(e.pointerId);
     const key = keyForSlot(slotIdx, columnsRef.current[dayIdx]!.date);
     dragSnapshot.current = new Set(selected);
-    dragAnchor.current = { dayIdx, slotIdx };
+    dragAnchor.current = pos;
     dragging.current = true;
     dragSelect.current = !selected.has(key);
-    applyRectFromSnapshot(dragAnchor.current, { dayIdx, slotIdx }, dragSelect.current);
+    applyRectFromSnapshot(dragAnchor.current, pos, dragSelect.current);
   };
 
   const toggleDayAll = (e: React.MouseEvent, dayIdx: number) => {
@@ -165,6 +167,9 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
     });
   };
 
+  const morningSlots = 6;
+  const afternoonSlots = SLOTS - morningSlots;
+
   return (
     <div
       className="slot-grid overflow-x-auto rounded-2xl border border-sky-200/80 bg-white/80 p-3 shadow-sm backdrop-blur-sm dark:border-slate-600 dark:bg-slate-900/70"
@@ -173,53 +178,38 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
       <div
         className="inline-grid gap-x-0.5 gap-y-1"
         style={{
-          gridTemplateColumns: `148px repeat(${SLOTS}, minmax(24px, 1fr))`,
+          gridTemplateColumns: `148px repeat(${SLOTS}, minmax(20px, 1fr))`,
         }}
       >
         <div className="text-[9px] font-medium text-slate-500 dark:text-slate-400">시간 구간</div>
         <div
-          className="flex flex-col items-center justify-center rounded-md bg-slate-100/90 px-1 py-1 text-center dark:bg-slate-800/80"
-          style={{ gridColumn: "2 / span 12" }}
+          className="flex flex-col items-center justify-center rounded-md bg-sky-100/90 px-1 py-1 text-center dark:bg-slate-800/80"
+          style={{ gridColumn: `2 / span ${morningSlots}` }}
         >
-          <span className="text-[10px] font-bold text-slate-700 dark:text-slate-200">12:00–24:00</span>
-          <span className="text-[8px] leading-tight text-slate-500 dark:text-slate-400">당일 18:00–24:00</span>
+          <span className="text-[10px] font-bold text-blue-800 dark:text-blue-200">09:00–12:00</span>
+          <span className="text-[8px] leading-tight text-slate-600 dark:text-slate-400">24시 · 전반</span>
         </div>
         <div
-          className="flex flex-col items-center justify-center rounded-md bg-violet-50/90 px-1 py-1 text-center dark:bg-violet-950/40"
-          style={{ gridColumn: "14 / span 2" }}
+          className="flex flex-col items-center justify-center rounded-md bg-blue-50/90 px-1 py-1 text-center dark:bg-blue-950/30"
+          style={{ gridColumn: `${2 + morningSlots} / span ${afternoonSlots}` }}
         >
-          <span className="text-[10px] font-bold text-violet-800 dark:text-violet-200">00:00–01:00</span>
-          <span className="text-[8px] leading-tight text-violet-600 dark:text-violet-300">익일 (01–09시 제외)</span>
+          <span className="text-[10px] font-bold text-blue-900 dark:text-blue-100">12:00–24:00</span>
+          <span className="text-[8px] leading-tight text-blue-800/80 dark:text-blue-300/90">24시 · 후반</span>
         </div>
 
         <div className="flex items-end pb-1 text-[10px] font-medium text-sky-700 dark:text-sky-300">
           날짜 / 전체
         </div>
-        {Array.from({ length: SLOTS }, (_, slot) => {
-          const time = slotLabel(slot);
-          const isNextDay = slot >= EVENING_SLOTS;
-          return (
-            <div
-              key={`h-${slot}`}
-              className="flex h-12 min-w-[24px] flex-col items-center justify-end gap-0 pb-0.5 text-center"
-            >
-              <span
-                className={[
-                  "whitespace-nowrap text-[9px] font-semibold tabular-nums leading-none",
-                  isNextDay ? "text-violet-600 dark:text-violet-300" : "text-slate-600 dark:text-slate-400",
-                ].join(" ")}
-                title={isNextDay ? `${time} (익일)` : time}
-              >
-                {time}
-              </span>
-              {isNextDay && (
-                <span className="text-[8px] font-medium leading-none text-violet-500 dark:text-violet-400">
-                  익일
-                </span>
-              )}
-            </div>
-          );
-        })}
+        {Array.from({ length: SLOTS }, (_, slot) => (
+          <div
+            key={`h-${slot}`}
+            className="flex h-11 min-w-[20px] flex-col items-center justify-end pb-0.5 text-center"
+          >
+            <span className="whitespace-nowrap text-[9px] font-semibold tabular-nums leading-none text-slate-600 dark:text-slate-400">
+              {slotLabel(slot)}
+            </span>
+          </div>
+        ))}
 
         {columns.map((col, dayIdx) => {
           const dayKeys = keysForDay(columns, dayIdx);
@@ -248,7 +238,7 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
                   className={[
                     "shrink-0 self-center rounded-md border px-1.5 py-1 text-[10px] font-bold leading-none transition",
                     allOn
-                      ? "border-rose-400 bg-rose-500 text-white dark:border-rose-500 dark:bg-rose-600"
+                      ? "border-blue-700 bg-blue-600 text-white dark:border-blue-400 dark:bg-blue-600"
                       : "border-sky-200 bg-white text-sky-700 hover:bg-sky-50 dark:border-slate-600 dark:bg-slate-800 dark:text-sky-300 dark:hover:bg-slate-700",
                   ].join(" ")}
                   onClick={(e) => toggleDayAll(e, dayIdx)}
@@ -263,8 +253,7 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
                 const key = keyForSlot(slot, col.date);
                 const on = selected.has(key);
                 const heat = heatCount?.get(key) ?? 0;
-                const mh = Math.max(1, maxHeat ?? 1);
-                const heatRatio = heat / mh;
+                const showCount = heat > 0;
                 return (
                   <button
                     key={`${col.label}-${slot}`}
@@ -274,29 +263,25 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
                     data-day-index={dayIdx}
                     data-slot-index={slot}
                     className={[
-                      "relative h-9 min-w-[24px] rounded-md border transition-colors",
+                      "relative h-10 min-w-[20px] rounded-md transition-colors",
                       on
-                        ? "z-[1] border-rose-500 bg-rose-400/85 shadow-md ring-1 ring-rose-300/80 dark:border-rose-400 dark:bg-rose-600/50 dark:ring-rose-900/50"
-                        : "border-slate-200/90 bg-white/90 hover:border-slate-300 hover:bg-slate-50/90 dark:border-slate-600 dark:bg-slate-800/80 dark:hover:border-slate-500 dark:hover:bg-slate-700/80",
+                        ? "z-[1] border-[3px] border-blue-800 bg-blue-500/40 shadow-sm dark:border-blue-300 dark:bg-blue-500/45"
+                        : showCount
+                          ? "border border-blue-200/90 bg-blue-50/90 dark:border-blue-900/50 dark:bg-blue-950/40"
+                          : "border border-slate-200/90 bg-white/90 hover:border-blue-200 hover:bg-blue-50/50 dark:border-slate-600 dark:bg-slate-800/80 dark:hover:border-blue-900",
                     ].join(" ")}
                     onPointerDown={(e) => onCellPointerDown(e, dayIdx, slot)}
-                    title={key}
+                    title={`${key}${heat > 0 ? ` · ${heat}명` : ""}`}
                   >
-                    {heatCount && heat > 0 && (
-                      <span
-                        className="pointer-events-none absolute inset-0 rounded-md"
-                        style={{
-                          background: `rgba(37, 99, 235, ${0.2 + heatRatio * 0.45})`,
-                        }}
-                      />
-                    )}
                     <span
                       className={[
-                        "relative z-10 flex h-full w-full items-center justify-center text-[11px]",
-                        on ? "font-bold text-rose-950 dark:text-rose-50" : "text-slate-400 dark:text-slate-500",
+                        "relative z-10 flex h-full w-full flex-col items-center justify-center gap-0 leading-none",
+                        showCount
+                          ? "text-[11px] font-bold tabular-nums text-blue-900 dark:text-blue-100"
+                          : "text-[10px] text-slate-300 dark:text-slate-600",
                       ].join(" ")}
                     >
-                      {on ? "✓" : ""}
+                      {showCount ? heat : ""}
                     </span>
                   </button>
                 );
@@ -306,10 +291,11 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
         })}
       </div>
       <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-        <strong className="text-rose-700 dark:text-rose-300">빨간 칸</strong>은 내 선택,{" "}
-        <strong className="text-blue-700 dark:text-blue-300">파란 농도</strong>는 그 시간에 가능하다고 표시한
-        다른 인원 수입니다. 드래그 시 직사각형 전체가 반영됩니다. 익일은{" "}
-        <strong>00:00–00:30만</strong> 선택 가능(새벽 01–09시 제외).
+        <strong>숫자</strong>는 그 30분에 가능하다고 적은 인원 수입니다. 내가 선택한 칸은{" "}
+        <strong className="text-blue-900 dark:text-blue-200">파란 배경 + 진한 테두리</strong>, 다른 사람만
+        있으면 연한 파란 배경에 숫자만 보입니다. <strong>Shift</strong>를 누른 채 두 칸을 차례로 누르면 그
+        사각형 범위가 일괄 추가됩니다. Shift 없이 드래그하면 직사각형으로 선택/해제합니다. 당일{" "}
+        <strong>09:00–24:00</strong>만 표시합니다.
       </p>
     </div>
   );

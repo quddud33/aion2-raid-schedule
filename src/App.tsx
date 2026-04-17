@@ -62,12 +62,6 @@ export function App() {
     return m;
   }, [rows]);
 
-  const maxHeat = useMemo(() => {
-    let x = 0;
-    for (const v of heatCount.values()) x = Math.max(x, v);
-    return x;
-  }, [heatCount]);
-
   const loadRows = useCallback(async () => {
     if (!supabase) return;
     setLoading(true);
@@ -388,7 +382,6 @@ export function App() {
           selected={mySlots}
           onCellsChange={(updater) => setMySlots((prev) => updater(prev))}
           heatCount={heatCount}
-          maxHeat={maxHeat}
         />
       </section>
 
@@ -429,9 +422,9 @@ export function App() {
           </table>
         </div>
         <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-          표의 파란 농도는 해당 30분에 가능하다고 표시한 인원 수입니다. 상단 배지는 가능 시간을 적은 모든
-          인원의 교집합입니다. (익일 01:00–09:00 구간은 표에서 제외되어 있으며, 예전에 저장된 해당 구간
-          데이터는 목록·교집합에는 그대로 보일 수 있습니다.)
+          표의 숫자는 해당 30분에 가능하다고 표시한 인원 수입니다. 상단 배지는 가능 시간을 적은 모든 인원의
+          교집합입니다. (표는 당일 09:00–24:00만 다루며, 그 밖에 저장된 슬롯은 목록·교집합에는 그대로 나올 수
+          있습니다.)
         </p>
       </section>
     </div>
