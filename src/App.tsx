@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FunctionsHttpError } from "@supabase/supabase-js";
 import { MatchSummary } from "./components/MatchSummary";
 import { TimeGrid } from "./components/TimeGrid";
 import { AION2TOOL_HOME, buildAion2toolCharUrl, resolveAion2toolServerId } from "./lib/aion2toolCharUrl";
@@ -78,16 +77,35 @@ function formatCombatInvokeFailure(message: string): string {
   return lines.join("\n");
 }
 
-async function readCombatInvokeHttpError(err: FunctionsHttpError): Promise<string | null> {
+/** 번들 이슈로 instanceof FunctionsHttpError 가 실패할 수 있어 이름·context 로 판별 */
+function isLikeFunctionsHttpError(err: unknown): err is { name: string; context: Response } {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as Record<string, unknown>;
+  return e.name === "FunctionsHttpError" && e.context instanceof Response;
+}
+
+async function readCombatInvokeHttpErrorBody(err: unknown): Promise<{ text: string; status: number } | null> {
+  if (!isLikeFunctionsHttpError(err)) return null;
+  const res = err.context;
+  const status = res.status;
   try {
-    const ct = err.context.headers.get("Content-Type") ?? "";
-    if (!ct.includes("application/json")) return null;
-    const body = (await err.context.json()) as { ok?: boolean; error?: string };
-    if (typeof body.error === "string" && body.error.length > 0) return body.error;
+    const text = (await res.clone().text()).trim();
+    if (text.startsWith("{")) {
+      try {
+        const body = JSON.parse(text) as { error?: string; message?: string };
+        const msg =
+          (typeof body.error === "string" && body.error.length > 0 && body.error) ||
+          (typeof body.message === "string" && body.message.length > 0 && body.message) ||
+          text;
+        return { text: msg, status };
+      } catch {
+        return text ? { text, status } : null;
+      }
+    }
+    return text ? { text: text.slice(0, 800), status } : null;
   } catch {
-    /* ignore */
+    return null;
   }
-  return null;
 }
 
 export function App() {
@@ -195,19 +213,28 @@ export function App() {
       if (mine) {
         const sid = resolveAion2toolServerId(mine.server_name);
         if (sid) {
-          const { data: fnData, error: fnErr } = await supabase.functions.invoke("fetch-combat-power", {
-            body: { serverId: sid, nickname: mine.nickname },
-          });
-          if (fnErr instanceof FunctionsHttpError) {
-            const fromBody = await readCombatInvokeHttpError(fnErr);
+          const { data: sessWrap } = await supabase.auth.getSession();
+          const access = sessWrap.session?.access_token;
+          if (!access) {
             setRefreshNote(
-              fromBody
-                ? `${fromBody}\n\n(예전 함수가 4xx를 반환한 경우, 저장소 최신 코드로 재배포하면 invoke가 본문을 정상적으로 받습니다. npm run deploy:functions)`
-                : formatCombatInvokeFailure(fnErr.message),
+              "로그인 세션 토큰이 없어 전투력 자동 갱신을 건너뜁니다. 페이지를 새로고침한 뒤 다시 시도해 주세요.",
             );
-          } else if (fnErr) {
-            setRefreshNote(formatCombatInvokeFailure(fnErr.message));
-          } else if (fnData && typeof fnData === "object") {
+          } else {
+            const { data: fnData, error: fnErr } = await supabase.functions.invoke("fetch-combat-power", {
+              body: { serverId: sid, nickname: mine.nickname },
+              headers: { Authorization: `Bearer ${access}` },
+            });
+            if (fnErr) {
+              const parsed = await readCombatInvokeHttpErrorBody(fnErr);
+              const baseMsg = fnErr instanceof Error ? fnErr.message : String(fnErr);
+              if (parsed) {
+                setRefreshNote(
+                  `${parsed.text}\n\n(Edge Function HTTP ${parsed.status}. 위 내용은 응답 본문에서 읽었습니다. GitHub Pages는 저장소 푸시로 프론트도 최신 배포해 주세요.)`,
+                );
+              } else {
+                setRefreshNote(formatCombatInvokeFailure(baseMsg));
+              }
+            } else if (fnData && typeof fnData === "object") {
             const fd = fnData as { ok?: boolean; error?: string; combat_power?: string };
             if (fd.ok === true && typeof fd.combat_power === "string" && fd.combat_power.length > 0) {
               const { error: upErr } = await supabase.from("raid_availability").upsert(
@@ -231,6 +258,7 @@ export function App() {
               }
             } else {
               setRefreshNote(fd.error ?? "전투력을 페이지에서 찾지 못했습니다.");
+            }
             }
           }
         } else {

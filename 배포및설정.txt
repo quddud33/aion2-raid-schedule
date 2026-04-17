@@ -46,7 +46,8 @@
        npm run deploy:functions
    - 그래도 같은 오류면: 브라우저 **광고 차단**·**회사/학교망**이 supabase 도메인을 막는지,
      `.env` / GitHub Secrets 의 `VITE_SUPABASE_URL` 이 **배포한 프로젝트와 동일한지** 확인합니다.
-   - 대시보드에 함수가 있는데도 **「non-2xx status code」**만 보이면, 예전 배포가 401/400 을 반환한 경우일 수 있음.
-     저장소를 최신으로 받은 뒤 `npm run deploy:functions` 로 다시 배포하면 해결되는 경우가 많습니다.
+   - 대시보드에 함수가 있는데도 **「non-2xx status code」**만 보이면: (1) Edge 를 최신으로 `npm run deploy:functions`
+     (2) **GitHub Pages 프론트도** 저장소 최신을 main 에 푸시해 Actions 로 다시 빌드·배포 (브라우저가 옛날 JS 를 쓰면
+     오류 본문을 읽는 패치·Authorization 헤더가 반영되지 않을 수 있음).
    - 아툴 HTML에 전투력이 없으면(SPA만 렌더) 자동 갱신은 다른 이유로 실패할 수 있습니다.
      그때는 npm run aion2tool:power 또는 표에서 수동 입력을 사용합니다.
