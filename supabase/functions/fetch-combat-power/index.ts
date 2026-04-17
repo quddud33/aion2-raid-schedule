@@ -11,14 +11,16 @@ const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-async function fetchHtml(url: string): Promise<{ ok: boolean; status: number; text: string }> {
+async function fetchHtml(url: string, referer?: string): Promise<{ ok: boolean; status: number; text: string }> {
   try {
+    const headers: Record<string, string> = {
+      "User-Agent": UA,
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "ko-KR,ko;q=0.9",
+    };
+    if (referer) headers.Referer = referer;
     const res = await fetch(url, {
-      headers: {
-        "User-Agent": UA,
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "ko-KR,ko;q=0.9",
-      },
+      headers,
       redirect: "follow",
     });
     return { ok: res.ok, status: res.status, text: await res.text() };
@@ -35,48 +37,48 @@ function escapeRegexId(id: string): string {
   return id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** 검색·다른 페이지에서 프로필 경로만 수집 (index 제외) */
+/** 검색 HTML·번들 JSON 등에서 프로필 URL 후보 수집 (index 제외) */
 function collectProfileUrls(html: string, serverId: string): string[] {
+  const normalized = html.replace(/\\\//g, "/");
   const esc = escapeRegexId(serverId);
-  const re = new RegExp(String.raw`/ko-kr/characters/${esc}/([^"'\s<>#]+)`, "gi");
   const seen = new Set<string>();
   const out: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(html)) !== null) {
-    const seg = (m[1] ?? "").trim();
-    if (!seg || seg === "index") continue;
+
+  const addSeg = (raw: string) => {
+    let seg = (raw ?? "").trim();
+    seg = seg.split(/["'?#]/)[0] ?? "";
+    seg = seg.replace(/\\/g, "").trim();
+    if (!seg || seg === "index") return;
     const full = `${PLAYNC_ORIGIN}/ko-kr/characters/${serverId}/${seg}`;
     if (!seen.has(full)) {
       seen.add(full);
       out.push(full);
     }
+  };
+
+  const res: RegExp[] = [
+    new RegExp(String.raw`https://aion2\.plaync\.com/ko-kr/characters/${esc}/([^"'\s<>]+)`, "gi"),
+    new RegExp(String.raw`/ko-kr/characters/${esc}/([^"'\s<>]+)`, "gi"),
+    new RegExp(String.raw`to=["']/ko-kr/characters/${esc}/([^"']+)`, "gi"),
+    new RegExp(String.raw`to=\{[^}]*['"]/ko-kr/characters/${esc}/([^'"]+)`, "gi"),
+    new RegExp(String.raw`["']/ko-kr/characters/${esc}/([^"']+)`, "gi"),
+  ];
+
+  for (const re of res) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(normalized)) !== null) {
+      addSeg(m[1] ?? "");
+    }
   }
   return out;
 }
 
-/** 마족(race=2) → 천족(race=1) 순으로 검색 */
-async function resolveProfileUrl(
-  serverId: string,
-  nickname: string,
-): Promise<{ url: string | null; note?: string }> {
-  const kw = encodeURIComponent(nickname);
-  for (const race of [2, 1] as const) {
-    const listUrl = `${PLAYNC_ORIGIN}/ko-kr/characters/index?race=${race}&serverId=${serverId}&keyword=${kw}`;
-    const r = await fetchHtml(listUrl);
-    if (!r.ok) continue;
-    const urls = collectProfileUrls(r.text, serverId);
-    if (urls.length === 1) return { url: urls[0]! };
-    if (urls.length > 1) {
-      return {
-        url: null,
-        note: "검색 결과가 여러 명입니다. 닉네임·서버를 공식과 동일하게 입력했는지 확인해 주세요.",
-      };
-    }
-  }
-  return {
-    url: null,
-    note: "플레이NC 검색에서 캐릭터를 찾지 못했습니다. 서버 ID·닉네임·종족(마족/천족)을 확인해 주세요.",
-  };
+function listSearchUrl(serverId: string, nickname: string, race?: number): string {
+  const q = new URLSearchParams();
+  if (race !== undefined) q.set("race", String(race));
+  q.set("serverId", serverId);
+  q.set("keyword", nickname);
+  return `${PLAYNC_ORIGIN}/ko-kr/characters/index?${q.toString()}`;
 }
 
 function extractPowerAndItem(html: string): { power: string | null; item: string | null } {
@@ -94,6 +96,36 @@ function buildCombatLine(power: string | null, item: string | null): string | nu
   if (power) return power.slice(0, 48);
   if (item) return item.slice(0, 48);
   return null;
+}
+
+/** 검색(race=2 → race=1 → race 생략) 후 URL 후보; 복수면 실제 프로필 HTML에 전투력 블록 있는 쪽만 시도 */
+async function resolveProfileUrl(
+  serverId: string,
+  nickname: string,
+): Promise<{ url: string | null; note?: string }> {
+  const indexRef = `${PLAYNC_ORIGIN}/ko-kr/characters/index`;
+  const searchOrders = [2, 1, undefined] as const;
+
+  for (const race of searchOrders) {
+    const listUrl = listSearchUrl(serverId, nickname, race);
+    const r = await fetchHtml(listUrl, indexRef);
+    if (!r.ok) continue;
+    const urls = collectProfileUrls(r.text, serverId);
+    if (urls.length === 0) continue;
+    if (urls.length === 1) return { url: urls[0]! };
+    for (const candidate of urls.slice(0, 10)) {
+      const d = await fetchHtml(candidate, listUrl);
+      if (!d.ok) continue;
+      const { power, item } = extractPowerAndItem(d.text);
+      if (power || item) return { url: candidate };
+    }
+    // 링크는 여럿인데 SSR에 전투력이 없으면 다음 검색(race 생략 등)으로 이어감
+  }
+  return {
+    url: null,
+    note:
+      "플레이NC 검색 HTML에서 프로필 링크를 찾지 못했습니다. (공식이 클라이언트만 렌더링하면 서버 fetch로는 목록이 비어 있을 수 있습니다.) 서버·닉네임·종족을 확인하거나 수동 입력을 사용해 주세요.",
+  };
 }
 
 Deno.serve(async (req: Request) => {
@@ -171,7 +203,7 @@ Deno.serve(async (req: Request) => {
     );
   }
 
-  const detail = await fetchHtml(profileUrl);
+  const detail = await fetchHtml(profileUrl, `${PLAYNC_ORIGIN}/ko-kr/characters/index`);
   if (!detail.ok) {
     return new Response(
       JSON.stringify({
