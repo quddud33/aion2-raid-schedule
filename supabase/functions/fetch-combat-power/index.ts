@@ -1,3 +1,7 @@
+/**
+ * 플레이NC 캐릭터 검색·프로필은 초기 HTML에 목록/전투력이 없고(CSR), 서버 fetch만으로는 실패하는 것이 일반적입니다.
+ * 프론트 앱은 목록 갱신 시 이 함수를 호출하지 않습니다. 수동 입력·별도 자동화(브라우저)를 권장합니다.
+ */
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
