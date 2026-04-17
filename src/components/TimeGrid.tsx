@@ -50,14 +50,29 @@ function keysInRectangle(
 
 type CellPos = { dayIdx: number; slotIdx: number };
 
+export type SlotWho = {
+  nickname: string;
+  server_name: string;
+};
+
+function slotHoverTitle(key: string, heat: number, whoList: SlotWho[] | undefined): string {
+  if (whoList && whoList.length > 0) {
+    const lines = whoList.map((p) => `${p.nickname} (${p.server_name})`);
+    return [`슬롯 ${key}`, `겹침 ${whoList.length}명`, ...lines].join("\n");
+  }
+  return heat > 0 ? `${key} · ${heat}명` : key;
+}
+
 type Props = {
   columns: DayColumn[];
   selected: Set<string>;
   onCellsChange: (updater: (prev: Set<string>) => Set<string>) => void;
   heatCount?: Map<string, number>;
+  /** 슬롯 키별 겹침 인원(닉·서버) — 호버 툴팁용 */
+  whoBySlot?: Map<string, SlotWho[]>;
 };
 
-export function TimeGrid({ columns, selected, onCellsChange, heatCount }: Props) {
+export function TimeGrid({ columns, selected, onCellsChange, heatCount, whoBySlot }: Props) {
   const columnsRef = useRef(columns);
   columnsRef.current = columns;
 
@@ -131,11 +146,18 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount }: Props)
 
     if (e.shiftKey) {
       const anchor = shiftAnchorRef.current;
+      const cols = columnsRef.current;
       if (anchor && (anchor.dayIdx !== pos.dayIdx || anchor.slotIdx !== pos.slotIdx)) {
-        const keys = keysInRectangle(columnsRef.current, anchor.dayIdx, pos.dayIdx, anchor.slotIdx, pos.slotIdx);
+        const keys = keysInRectangle(cols, anchor.dayIdx, pos.dayIdx, anchor.slotIdx, pos.slotIdx);
         onCellsChange((prev) => {
+          const anchorKey = keyForSlot(anchor.slotIdx, cols[anchor.dayIdx]!.date);
+          /** 기준 칸이 채워져 있으면 직사각형 전부 지우기, 비어 있으면 전부 채우기 */
+          const anchorFilled = prev.has(anchorKey);
           const next = new Set(prev);
-          for (const k of keys) next.add(k);
+          for (const k of keys) {
+            if (anchorFilled) next.delete(k);
+            else next.add(k);
+          }
           return next;
         });
       }
@@ -254,6 +276,7 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount }: Props)
                 const on = selected.has(key);
                 const heat = heatCount?.get(key) ?? 0;
                 const showCount = heat > 0;
+                const whoList = whoBySlot?.get(key);
                 return (
                   <button
                     key={`${col.label}-${slot}`}
@@ -271,7 +294,7 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount }: Props)
                           : "border border-slate-200/90 bg-white/90 hover:border-blue-200 hover:bg-blue-50/50 dark:border-slate-600 dark:bg-slate-800/80 dark:hover:border-blue-900",
                     ].join(" ")}
                     onPointerDown={(e) => onCellPointerDown(e, dayIdx, slot)}
-                    title={`${key}${heat > 0 ? ` · ${heat}명` : ""}`}
+                    title={slotHoverTitle(key, heat, whoList)}
                   >
                     <span
                       className={[
@@ -291,10 +314,13 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount }: Props)
         })}
       </div>
       <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+        겹침이 있는 칸에 <strong>마우스를 올리면</strong> 닉네임·서버가 툴팁으로 표시됩니다.{" "}
         <strong>숫자</strong>는 그 30분에 가능하다고 적은 인원 수입니다. 내가 선택한 칸은{" "}
         <strong className="text-blue-900 dark:text-blue-200">파란 배경 + 진한 테두리</strong>, 다른 사람만
-        있으면 연한 파란 배경에 숫자만 보입니다. <strong>Shift</strong>를 누른 채 두 칸을 차례로 누르면 그
-        사각형 범위가 일괄 추가됩니다. Shift 없이 드래그하면 직사각형으로 선택/해제합니다. 당일{" "}
+        있으면 연한 파란 배경에 숫자만 보입니다.         <strong>Shift</strong>로 두 칸을 찍으면 직사각형이 한 번에 바뀝니다.{" "}
+        <strong>기준 칸이 채워진 상태</strong>면 그 범위를 지우고, <strong>빈 칸이 기준</strong>이면 그
+        범위를 채웁니다. (기준은 직전에 누른 칸; Shift 없이 한 번 누른 뒤 Shift 두 번째 클릭.) Shift 없이
+        드래그하면 직사각형으로 선택/해제합니다. 당일{" "}
         <strong>09:00–24:00</strong>만 표시합니다.
       </p>
     </div>

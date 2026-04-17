@@ -62,6 +62,20 @@ export function App() {
     return m;
   }, [rows]);
 
+  const whoBySlot = useMemo(() => {
+    const m = new Map<string, { nickname: string; server_name: string }[]>();
+    for (const r of rows) {
+      for (const s of r.slots) {
+        if (!m.has(s)) m.set(s, []);
+        m.get(s)!.push({ nickname: r.nickname, server_name: r.server_name });
+      }
+    }
+    for (const list of m.values()) {
+      list.sort((a, b) => a.nickname.localeCompare(b.nickname, "ko"));
+    }
+    return m;
+  }, [rows]);
+
   const loadRows = useCallback(async () => {
     if (!supabase) return;
     setLoading(true);
@@ -382,6 +396,7 @@ export function App() {
           selected={mySlots}
           onCellsChange={(updater) => setMySlots((prev) => updater(prev))}
           heatCount={heatCount}
+          whoBySlot={whoBySlot}
         />
       </section>
 
