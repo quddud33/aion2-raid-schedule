@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "fetch:raid": "node scripts/fetch-availability.mjs",
-    "crawl": "node scripts/crawl-url.mjs"
+    "crawl": "node scripts/crawl-url.mjs",
+    "aion2tool:power": "node scripts/aion2tool-fetch-power.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
@@ -20,6 +21,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "playwright": "1.49",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.15",
     "typescript": "~5.6.3",
