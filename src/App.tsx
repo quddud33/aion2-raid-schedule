@@ -328,7 +328,7 @@ export function App() {
     "rounded-2xl border border-sky-200/90 bg-white/90 p-5 shadow-md backdrop-blur-sm dark:border-slate-600 dark:bg-slate-900/80";
 
   return (
-    <div className="mx-auto flex min-h-full max-w-7xl flex-col gap-6 p-4 pb-16 sm:p-8">
+    <div className="mx-auto flex min-h-full max-w-7xl flex-col gap-6 px-3 py-4 pb-16 sm:px-8 sm:py-8">
       <header className="flex flex-col gap-4 border-b border-sky-200/90 pb-6 dark:border-slate-700 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 gap-3">
           <img
@@ -342,7 +342,9 @@ export function App() {
             <p className="text-xs font-medium uppercase tracking-widest text-sky-600 dark:text-sky-400">
               Aion 2 · 성역(레이드)
             </p>
-            <h1 className="mt-1 text-3xl font-semibold text-slate-800 dark:text-slate-50">일정 맞추기</h1>
+            <h1 className="mt-1 text-2xl font-semibold text-slate-800 dark:text-slate-50 sm:text-3xl">
+              일정 맞추기
+            </h1>
             <p className="mt-2 max-w-2xl text-sm text-slate-600 dark:text-slate-400">
               루드라 / 바고트 레이드별로 가능한 시간을 표시합니다. 달력은{" "}
               <strong className="text-slate-800 dark:text-slate-200">수요일 초기화</strong> 기준 금주·차주
@@ -350,20 +352,20 @@ export function App() {
             </p>
           </div>
         </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => setDarkMode((d) => !d)}
-            className="rounded-xl border border-sky-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm hover:bg-sky-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+            className="min-h-[44px] rounded-xl border border-sky-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm hover:bg-sky-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
             aria-pressed={darkMode}
           >
             {darkMode ? "라이트 모드" : "다크 모드"}
           </button>
-          <div className="flex gap-2 rounded-xl border border-sky-200 bg-white/90 p-1 shadow-sm dark:border-slate-600 dark:bg-slate-800/90">
+          <div className="flex min-w-0 gap-1 rounded-xl border border-sky-200 bg-white/90 p-1 shadow-sm dark:border-slate-600 dark:bg-slate-800/90 sm:gap-2">
             <button
               type="button"
               className={[
-                "rounded-lg px-4 py-2 text-sm font-medium transition",
+                "min-h-[44px] flex-1 rounded-lg px-3 py-2 text-sm font-medium transition sm:flex-none sm:px-4",
                 raidType === "rudra"
                   ? "bg-sky-500 text-white shadow-sm dark:bg-sky-600"
                   : "text-slate-600 hover:bg-sky-50 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white",
@@ -375,7 +377,7 @@ export function App() {
             <button
               type="button"
               className={[
-                "rounded-lg px-4 py-2 text-sm font-medium transition",
+                "min-h-[44px] flex-1 rounded-lg px-3 py-2 text-sm font-medium transition sm:flex-none sm:px-4",
                 raidType === "bagot"
                   ? "bg-sky-500 text-white shadow-sm dark:bg-sky-600"
                   : "text-slate-600 hover:bg-sky-50 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white",
@@ -394,8 +396,8 @@ export function App() {
         </div>
       )}
 
-      <div className="flex flex-col gap-8 md:flex-row md:items-start md:gap-8">
-        <div className="min-w-0 flex-1">
+      <div className="flex flex-col gap-8 md:flex-row md:items-stretch md:gap-8">
+        <div className="min-w-0 flex-1 md:flex md:h-full md:min-h-0 md:flex-col">
           <MatchSummary
             columns={columns}
             participants={rows.map((r) => ({
@@ -406,12 +408,12 @@ export function App() {
           />
         </div>
 
-        <aside className={`w-full shrink-0 space-y-4 md:max-w-sm ${card}`}>
+        <aside className={`flex w-full shrink-0 flex-col space-y-4 md:max-w-sm ${card}`}>
           <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">내 정보</h2>
         <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">
           캐릭터 닉네임
           <input
-            className="mt-1 w-full rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900"
+            className="mt-1 box-border min-h-[44px] w-full max-w-full rounded-lg border border-sky-200 bg-white px-3 py-2.5 text-base text-slate-800 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900 sm:min-h-0 sm:py-2 sm:text-sm"
             value={nickname}
             onChange={(e) => setNickname(e.target.value)}
             placeholder="예: 가을바람"
@@ -421,7 +423,7 @@ export function App() {
         <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">
           서버
           <input
-            className="mt-1 w-full rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900"
+            className="mt-1 box-border min-h-[44px] w-full max-w-full rounded-lg border border-sky-200 bg-white px-3 py-2.5 text-base text-slate-800 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900 sm:min-h-0 sm:py-2 sm:text-sm"
             value={server}
             onChange={(e) => setServer(e.target.value)}
             placeholder="예: 지켈"
@@ -436,7 +438,7 @@ export function App() {
             type="button"
             disabled={saving || !authReady}
             onClick={() => void onSave()}
-            className="flex-1 rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-sky-600 dark:hover:bg-sky-500"
+            className="min-h-[44px] flex-1 rounded-xl bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-sky-600 dark:hover:bg-sky-500 sm:py-2.5"
           >
             {saving ? "저장 중…" : "가능 시간 저장"}
           </button>
@@ -444,7 +446,7 @@ export function App() {
             type="button"
             disabled={saving || !authReady}
             onClick={() => void onClearMine()}
-            className="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-700 hover:border-sky-300 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+            className="min-h-[44px] rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700 hover:border-sky-300 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 sm:py-2.5"
           >
             내 행 삭제
           </button>

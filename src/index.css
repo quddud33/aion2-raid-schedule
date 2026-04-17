@@ -8,6 +8,10 @@ body,
   min-height: 100%;
 }
 
+#root {
+  overflow-x: clip;
+}
+
 body {
   @apply bg-sky-50 text-slate-800 antialiased transition-colors duration-200;
 }

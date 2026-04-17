@@ -279,20 +279,19 @@ export function TimeGrid({
   const afternoonSlots = SLOTS - morningSlots;
 
   return (
-    <div
-      className="slot-grid overflow-x-auto rounded-2xl border border-sky-200/80 bg-white/80 p-3 shadow-sm backdrop-blur-sm dark:border-slate-600 dark:bg-slate-900/70"
-      style={{ touchAction: "none" }}
-    >
+    <div className="slot-grid max-w-full overflow-x-auto rounded-2xl border border-sky-200/80 bg-white/80 p-5 shadow-sm backdrop-blur-sm dark:border-slate-600 dark:bg-slate-900/70">
       {scheduleIntro != null && (
         <div className="mb-3 flex flex-wrap items-end justify-between gap-2 border-b border-sky-100/90 pb-3 dark:border-slate-700/90">
           {scheduleIntro}
         </div>
       )}
       <div
-        className="inline-grid gap-x-0.5 gap-y-1"
-        style={{
-          gridTemplateColumns: `148px repeat(${SLOTS}, minmax(20px, 1fr))`,
-        }}
+        className={[
+          "inline-grid min-w-0 gap-1",
+          "[grid-template-columns:minmax(5.25rem,6.5rem)_repeat(30,minmax(0.45rem,1fr))]",
+          "sm:[grid-template-columns:minmax(6.75rem,7.5rem)_repeat(30,minmax(0.55rem,1fr))]",
+          "md:[grid-template-columns:9.25rem_repeat(30,minmax(1.15rem,1fr))]",
+        ].join(" ")}
       >
         <div className="text-[9px] font-medium text-slate-500 dark:text-slate-400">시간 구간</div>
         <div
@@ -316,7 +315,7 @@ export function TimeGrid({
         {Array.from({ length: SLOTS }, (_, slot) => (
           <div
             key={`h-${slot}`}
-            className="flex h-11 min-w-[20px] flex-col items-center justify-end pb-0.5 text-center"
+            className="flex h-11 min-w-0 flex-col items-center justify-end pb-0.5 text-center"
           >
             <span className="whitespace-nowrap text-[9px] font-semibold tabular-nums leading-none text-slate-600 dark:text-slate-400">
               {slotLabel(slot)}
@@ -379,7 +378,7 @@ export function TimeGrid({
                     data-day-index={dayIdx}
                     data-slot-index={slot}
                     className={[
-                      "relative h-10 min-w-[20px] rounded-md transition-colors",
+                      "relative h-10 min-w-0 touch-none rounded-md transition-colors",
                       on
                         ? "z-[1] border-[3px] border-blue-800 bg-blue-500/40 shadow-sm dark:border-blue-300 dark:bg-blue-500/45"
                         : showCount
