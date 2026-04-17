@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MatchSummary } from "./components/MatchSummary";
 import { TimeGrid } from "./components/TimeGrid";
+import { AION2TOOL_HOME, buildAion2toolCharUrl } from "./lib/aion2toolCharUrl";
 import { buildRaidWeekColumns } from "./lib/slots";
 import { supabase, supabaseConfigured } from "./lib/supabase";
 
@@ -13,6 +14,8 @@ type AvailabilityRow = {
   nickname: string;
   server_name: string;
   slots: string[];
+  combat_power: string | null;
+  combat_power_updated_at: string | null;
   updated_at: string;
 };
 
@@ -58,6 +61,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [darkMode, setDarkMode] = useState(readInitialDark);
+  const [myUserId, setMyUserId] = useState<string | null>(null);
+  const [myCombatDraft, setMyCombatDraft] = useState("");
+  const serverCombatSyncedRef = useRef<string | null>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
@@ -104,7 +110,16 @@ export function App() {
       setError(e.message);
       return;
     }
-    setRows((data ?? []) as AvailabilityRow[]);
+    setRows(
+      (data ?? []).map((r) => {
+        const row = r as AvailabilityRow;
+        return {
+          ...row,
+          combat_power: row.combat_power ?? null,
+          combat_power_updated_at: row.combat_power_updated_at ?? null,
+        };
+      }),
+    );
   }, [raidType]);
 
   const beginSlotUndoDragSession = useCallback(() => {
@@ -185,13 +200,42 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (!supabase || !authReady) {
+      setMyUserId(null);
+      return;
+    }
+    let cancelled = false;
+    void supabase.auth.getUser().then(({ data }) => {
+      if (!cancelled) setMyUserId(data.user?.id ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!myUserId) {
+      setMyCombatDraft("");
+      serverCombatSyncedRef.current = null;
+      return;
+    }
+    const mine = rows.find((r) => r.user_id === myUserId);
+    const cp = mine?.combat_power ?? "";
+    if (serverCombatSyncedRef.current !== cp) {
+      serverCombatSyncedRef.current = cp;
+      setMyCombatDraft(cp);
+    }
+  }, [rows, myUserId]);
+
+  useEffect(() => {
     if (!supabase || !authReady) return;
     void loadRows();
   }, [authReady, loadRows]);
 
   useEffect(() => {
     if (!supabase || !authReady) return;
-    const channel = supabase
+    const client = supabase;
+    const channel = client
       .channel(`raid_availability:${raidType}`)
       .on(
         "postgres_changes",
@@ -207,7 +251,7 @@ export function App() {
       )
       .subscribe();
     return () => {
-      void supabase.removeChannel(channel);
+      void client.removeChannel(channel);
     };
   }, [authReady, raidType, loadRows]);
 
@@ -242,12 +286,15 @@ export function App() {
       setError(ue?.message ?? "세션을 찾을 수 없습니다.");
       return;
     }
+    const mine = rows.find((r) => r.user_id === u.user.id);
     const payload = {
       user_id: u.user.id,
       raid_type: raidType,
       nickname: nn,
       server_name: sv,
       slots: [...mySlots],
+      combat_power: mine?.combat_power ?? null,
+      combat_power_updated_at: mine?.combat_power_updated_at ?? null,
       updated_at: new Date().toISOString(),
     };
     const { error: ie } = await supabase.from("raid_availability").upsert(payload, {
@@ -260,6 +307,46 @@ export function App() {
     }
     await loadRows();
     slotUndoStack.current = [];
+  };
+
+  const saveMyCombat = async () => {
+    if (!supabase) return;
+    const { data: u, error: ue } = await supabase.auth.getUser();
+    if (ue || !u.user) {
+      setError(ue?.message ?? "세션을 찾을 수 없습니다.");
+      return;
+    }
+    const mine = rows.find((r) => r.user_id === u.user.id);
+    if (!mine) {
+      setError("먼저 닉네임·서버·가능 시간을 저장한 뒤 전투력을 반영할 수 있습니다.");
+      return;
+    }
+    const raw = myCombatDraft.trim();
+    if (raw.length > 48) {
+      setError("전투력은 48자 이내로 입력해 주세요.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    const payload = {
+      user_id: u.user.id,
+      raid_type: raidType,
+      nickname: mine.nickname,
+      server_name: mine.server_name,
+      slots: mine.slots,
+      combat_power: raw.length ? raw : null,
+      combat_power_updated_at: raw.length ? new Date().toISOString() : null,
+      updated_at: mine.updated_at,
+    };
+    const { error: ie } = await supabase.from("raid_availability").upsert(payload, {
+      onConflict: "user_id,raid_type",
+    });
+    setSaving(false);
+    if (ie) {
+      setError(ie.message);
+      return;
+    }
+    await loadRows();
   };
 
   const onClearMine = async () => {
@@ -487,34 +574,116 @@ export function App() {
       </section>
 
       <section className={`${card} pb-5`}>
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">등록된 인원</h2>
-          <span className="text-xs text-slate-500 dark:text-slate-400">{rows.length}명</span>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-slate-600 dark:text-slate-400">
+            <button
+              type="button"
+              disabled={loading || !authReady}
+              onClick={() => void loadRows()}
+              className="min-h-[36px] rounded-lg border border-sky-200 bg-white px-3 py-1.5 font-medium text-slate-700 shadow-sm hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+            >
+              {loading ? "불러오는 중…" : "목록 새로고침"}
+            </button>
+            <span className="hidden text-slate-300 sm:inline dark:text-slate-600" aria-hidden>
+              |
+            </span>
+            <span className="max-w-md leading-relaxed">
+              전투력은{" "}
+              <a
+                href={AION2TOOL_HOME}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-sky-600 underline-offset-2 hover:underline dark:text-sky-400"
+              >
+                아툴
+              </a>
+              캐릭터 페이지에서 확인한 뒤, 본인 행에만 입력·반영됩니다. 옆 열의「아툴」은 해당 닉·서버 검색
+              링크입니다.
+            </span>
+            <span className="tabular-nums text-slate-500 dark:text-slate-400">{rows.length}명</span>
+          </div>
         </div>
         <div className="mt-4 overflow-x-auto">
-          <table className="w-full min-w-[520px] border-collapse text-left text-sm">
+          <table className="w-full min-w-[640px] border-collapse text-left text-sm">
             <thead>
               <tr className="border-b border-sky-100 text-xs uppercase tracking-wide text-slate-500 dark:border-slate-700 dark:text-slate-400">
                 <th className="py-2 pr-3 font-medium">닉네임</th>
                 <th className="py-2 pr-3 font-medium">서버</th>
                 <th className="py-2 pr-3 font-medium">가능 칸</th>
-                <th className="py-2 font-medium">갱신 (24h)</th>
+                <th className="py-2 pr-3 font-medium normal-case">전투력</th>
+                <th className="py-2 font-medium normal-case">
+                  <span className="block">일정 갱신</span>
+                  <span className="block text-[10px] font-normal normal-case tracking-normal text-slate-400 dark:text-slate-500">
+                    (24h)
+                  </span>
+                </th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-b border-sky-100/90 text-slate-800 dark:border-slate-700 dark:text-slate-200">
-                  <td className="py-2 pr-3">{r.nickname}</td>
-                  <td className="py-2 pr-3 text-slate-600 dark:text-slate-400">{r.server_name}</td>
-                  <td className="py-2 pr-3 tabular-nums">{r.slots.length}</td>
-                  <td className="py-2 text-xs text-slate-500 tabular-nums dark:text-slate-400">
-                    {fmt24(new Date(r.updated_at))}
-                  </td>
-                </tr>
-              ))}
+              {rows.map((r) => {
+                const charUrl = buildAion2toolCharUrl(r.server_name, r.nickname);
+                const isMine = myUserId !== null && r.user_id === myUserId;
+                return (
+                  <tr
+                    key={r.id}
+                    className="border-b border-sky-100/90 text-slate-800 dark:border-slate-700 dark:text-slate-200"
+                  >
+                    <td className="py-2 pr-3">{r.nickname}</td>
+                    <td className="py-2 pr-3 text-slate-600 dark:text-slate-400">{r.server_name}</td>
+                    <td className="py-2 pr-3 tabular-nums">{r.slots.length}</td>
+                    <td className="max-w-[14rem] py-2 pr-3 align-top text-xs">
+                      <div className="flex flex-col gap-1.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-medium tabular-nums text-slate-800 dark:text-slate-100">
+                            {r.combat_power?.trim() ? r.combat_power : "—"}
+                          </span>
+                          <a
+                            href={charUrl ?? AION2TOOL_HOME}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="shrink-0 font-medium text-sky-600 underline-offset-2 hover:underline dark:text-sky-400"
+                          >
+                            아툴
+                          </a>
+                        </div>
+                        {r.combat_power_updated_at && (
+                          <span className="text-[10px] leading-tight text-slate-400 dark:text-slate-500">
+                            전투력 반영: {fmt24(new Date(r.combat_power_updated_at))}
+                          </span>
+                        )}
+                        {isMine && (
+                          <div className="flex flex-col gap-1.5 pt-0.5 sm:flex-row sm:items-center">
+                            <input
+                              className="box-border min-h-[40px] w-full min-w-0 flex-1 rounded-md border border-sky-200 bg-white px-2 py-2 text-sm text-slate-800 outline-none focus:border-sky-400 focus:ring-1 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900 sm:min-h-0 sm:py-1.5"
+                              value={myCombatDraft}
+                              onChange={(e) => setMyCombatDraft(e.target.value)}
+                              placeholder="예: 12,345 (달성 최고 등)"
+                              maxLength={48}
+                              disabled={saving}
+                              aria-label="내 전투력 입력"
+                            />
+                            <button
+                              type="button"
+                              disabled={saving || !authReady}
+                              onClick={() => void saveMyCombat()}
+                              className="min-h-[40px] shrink-0 rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/50 dark:text-sky-200 dark:hover:bg-sky-900/60 sm:min-h-0 sm:py-1.5"
+                            >
+                              {saving ? "저장 중…" : "전투력 반영"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-2 text-xs text-slate-500 tabular-nums dark:text-slate-400">
+                      {fmt24(new Date(r.updated_at))}
+                    </td>
+                  </tr>
+                );
+              })}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="py-6 text-center text-slate-500 dark:text-slate-400">
+                  <td colSpan={5} className="py-6 text-center text-slate-500 dark:text-slate-400">
                     아직 등록된 일정이 없습니다.
                   </td>
                 </tr>

@@ -8,6 +8,8 @@ create table if not exists public.raid_availability (
   nickname text not null,
   server_name text not null,
   slots text[] not null default '{}',
+  combat_power text null,
+  combat_power_updated_at timestamptz null,
   updated_at timestamptz not null default now(),
   unique (user_id, raid_type)
 );

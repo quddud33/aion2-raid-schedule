@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "fetch:raid": "node scripts/fetch-availability.mjs",
     "crawl": "node scripts/crawl-url.mjs",
-    "aion2tool:power": "node scripts/aion2tool-fetch-power.mjs"
+    "aion2tool:power": "node scripts/aion2tool-fetch-power.mjs",
+    "aion2tool:servers": "node scripts/dump-aion2tool-servers.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
