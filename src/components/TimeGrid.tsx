@@ -2,12 +2,15 @@ import { Fragment, useCallback, useEffect, useRef } from "react";
 import type { DayColumn } from "../lib/slots";
 import { slotKey } from "../lib/slots";
 
-const SLOTS = 24; // 18:00~익일 06:00, 30분 간격
+/** 당일 18:00–24:00 (12칸) + 익일 00:00–00:30만 (01:00–09:00 구간 제외) */
+const EVENING_SLOTS = 12;
+const MORNING_SLOTS = 2;
+const SLOTS = EVENING_SLOTS + MORNING_SLOTS;
 
 function keyForSlot(slot: number, columnDate: Date): string {
   const D = new Date(columnDate);
   D.setHours(0, 0, 0, 0);
-  if (slot < 12) {
+  if (slot < EVENING_SLOTS) {
     const d = new Date(D);
     d.setHours(18, 0, 0, 0);
     d.setMinutes(d.getMinutes() + slot * 30);
@@ -17,7 +20,7 @@ function keyForSlot(slot: number, columnDate: Date): string {
   const d = new Date(D);
   d.setDate(d.getDate() + 1);
   d.setHours(0, 0, 0, 0);
-  d.setMinutes((slot - 12) * 30);
+  d.setMinutes((slot - EVENING_SLOTS) * 30);
   const mins = d.getHours() * 60 + d.getMinutes();
   return slotKey(d, mins);
 }
@@ -29,13 +32,13 @@ function keysForDay(columns: DayColumn[], dayIdx: number): string[] {
 }
 
 function slotLabel(slot: number): string {
-  if (slot < 12) {
+  if (slot < EVENING_SLOTS) {
     const total = 18 * 60 + slot * 30;
     const h = Math.floor(total / 60);
     const m = total % 60;
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   }
-  const total = (slot - 12) * 30;
+  const total = (slot - EVENING_SLOTS) * 30;
   const h = Math.floor(total / 60);
   const m = total % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
@@ -173,21 +176,20 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
           gridTemplateColumns: `148px repeat(${SLOTS}, minmax(24px, 1fr))`,
         }}
       >
-        {/* 그룹 헤더: 12:00–24:00(당일 저녁) | 00:00–12:00(익일 새벽) */}
         <div className="text-[9px] font-medium text-slate-500 dark:text-slate-400">시간 구간</div>
         <div
           className="flex flex-col items-center justify-center rounded-md bg-slate-100/90 px-1 py-1 text-center dark:bg-slate-800/80"
           style={{ gridColumn: "2 / span 12" }}
         >
           <span className="text-[10px] font-bold text-slate-700 dark:text-slate-200">12:00–24:00</span>
-          <span className="text-[8px] leading-tight text-slate-500 dark:text-slate-400">당일 18:00–24:00 (30분 단위)</span>
+          <span className="text-[8px] leading-tight text-slate-500 dark:text-slate-400">당일 18:00–24:00</span>
         </div>
         <div
           className="flex flex-col items-center justify-center rounded-md bg-violet-50/90 px-1 py-1 text-center dark:bg-violet-950/40"
-          style={{ gridColumn: "14 / span 12" }}
+          style={{ gridColumn: "14 / span 2" }}
         >
-          <span className="text-[10px] font-bold text-violet-800 dark:text-violet-200">00:00–12:00</span>
-          <span className="text-[8px] leading-tight text-violet-600 dark:text-violet-300">익일 00:00–06:00 (30분 단위)</span>
+          <span className="text-[10px] font-bold text-violet-800 dark:text-violet-200">00:00–01:00</span>
+          <span className="text-[8px] leading-tight text-violet-600 dark:text-violet-300">익일 (01–09시 제외)</span>
         </div>
 
         <div className="flex items-end pb-1 text-[10px] font-medium text-sky-700 dark:text-sky-300">
@@ -195,7 +197,7 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
         </div>
         {Array.from({ length: SLOTS }, (_, slot) => {
           const time = slotLabel(slot);
-          const isNextDay = slot >= 12;
+          const isNextDay = slot >= EVENING_SLOTS;
           return (
             <div
               key={`h-${slot}`}
@@ -246,7 +248,7 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
                   className={[
                     "shrink-0 self-center rounded-md border px-1.5 py-1 text-[10px] font-bold leading-none transition",
                     allOn
-                      ? "border-sky-500 bg-sky-500 text-white dark:border-sky-400 dark:bg-sky-600"
+                      ? "border-rose-400 bg-rose-500 text-white dark:border-rose-500 dark:bg-rose-600"
                       : "border-sky-200 bg-white text-sky-700 hover:bg-sky-50 dark:border-slate-600 dark:bg-slate-800 dark:text-sky-300 dark:hover:bg-slate-700",
                   ].join(" ")}
                   onClick={(e) => toggleDayAll(e, dayIdx)}
@@ -274,8 +276,8 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
                     className={[
                       "relative h-9 min-w-[24px] rounded-md border transition-colors",
                       on
-                        ? "border-sky-500 bg-sky-400/50 shadow-sm dark:border-sky-400 dark:bg-sky-500/35"
-                        : "border-slate-200/90 bg-white/90 hover:border-sky-300 hover:bg-sky-50/80 dark:border-slate-600 dark:bg-slate-800/80 dark:hover:border-sky-600 dark:hover:bg-slate-700/80",
+                        ? "z-[1] border-rose-500 bg-rose-400/85 shadow-md ring-1 ring-rose-300/80 dark:border-rose-400 dark:bg-rose-600/50 dark:ring-rose-900/50"
+                        : "border-slate-200/90 bg-white/90 hover:border-slate-300 hover:bg-slate-50/90 dark:border-slate-600 dark:bg-slate-800/80 dark:hover:border-slate-500 dark:hover:bg-slate-700/80",
                     ].join(" ")}
                     onPointerDown={(e) => onCellPointerDown(e, dayIdx, slot)}
                     title={key}
@@ -284,14 +286,14 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
                       <span
                         className="pointer-events-none absolute inset-0 rounded-md"
                         style={{
-                          background: `rgba(14, 165, 233, ${0.12 + heatRatio * 0.35})`,
+                          background: `rgba(37, 99, 235, ${0.2 + heatRatio * 0.45})`,
                         }}
                       />
                     )}
                     <span
                       className={[
-                        "relative z-10 flex h-full w-full items-center justify-center text-[10px]",
-                        on ? "font-semibold text-sky-950 dark:text-sky-50" : "text-slate-400 dark:text-slate-500",
+                        "relative z-10 flex h-full w-full items-center justify-center text-[11px]",
+                        on ? "font-bold text-rose-950 dark:text-rose-50" : "text-slate-400 dark:text-slate-500",
                       ].join(" ")}
                     >
                       {on ? "✓" : ""}
@@ -304,9 +306,10 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, maxHeat 
         })}
       </div>
       <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-        가로는 24시간제(12–24시 당일 저녁, 0–12시 익일 새벽), 세로는 날짜입니다. 셀에서 드래그하면{" "}
-        <strong className="text-slate-700 dark:text-slate-300">시작 칸–끝 칸 직사각형 전체</strong>가 한 번에
-        선택/해제됩니다. 날짜 오른쪽 <strong>전체</strong>는 해당 날 18:00~익일 06:00 전 구간을 토글합니다.
+        <strong className="text-rose-700 dark:text-rose-300">빨간 칸</strong>은 내 선택,{" "}
+        <strong className="text-blue-700 dark:text-blue-300">파란 농도</strong>는 그 시간에 가능하다고 표시한
+        다른 인원 수입니다. 드래그 시 직사각형 전체가 반영됩니다. 익일은{" "}
+        <strong>00:00–00:30만</strong> 선택 가능(새벽 01–09시 제외).
       </p>
     </div>
   );

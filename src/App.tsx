@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MatchSummary } from "./components/MatchSummary";
-import { SelectedSlotsSummary } from "./components/SelectedSlotsSummary";
 import { TimeGrid } from "./components/TimeGrid";
 import { buildRaidWeekColumns } from "./lib/slots";
 import { supabase, supabaseConfigured } from "./lib/supabase";
@@ -384,7 +383,6 @@ export function App() {
           </div>
           {loading && <span className="text-xs text-slate-500 dark:text-slate-400">불러오는 중…</span>}
         </div>
-        <SelectedSlotsSummary selected={mySlots} />
         <TimeGrid
           columns={columns}
           selected={mySlots}
@@ -431,8 +429,9 @@ export function App() {
           </table>
         </div>
         <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-          하늘색 농도는 해당 30분에 가능하다고 표시한 인원 수입니다. 상단 배지는 가능 시간을 적은 모든
-          인원의 교집합입니다.
+          표의 파란 농도는 해당 30분에 가능하다고 표시한 인원 수입니다. 상단 배지는 가능 시간을 적은 모든
+          인원의 교집합입니다. (익일 01:00–09:00 구간은 표에서 제외되어 있으며, 예전에 저장된 해당 구간
+          데이터는 목록·교집합에는 그대로 보일 수 있습니다.)
         </p>
       </section>
     </div>
