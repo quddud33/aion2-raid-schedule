@@ -35,6 +35,8 @@ function slotLabel(slot: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
+type CellPos = { dayIdx: number; slotIdx: number };
+
 function keysInRectangle(
   columns: DayColumn[],
   d0: number,
@@ -57,7 +59,24 @@ function keysInRectangle(
   return keys;
 }
 
-type CellPos = { dayIdx: number; slotIdx: number };
+/** 표 순서(날짜 위→아래, 각 날은 시간 왼쪽→오른쪽)의 선형 인덱스 — 탐색기 시프트 선택과 동일한 연속 구간 */
+function cellLinearIndex(p: CellPos): number {
+  return p.dayIdx * SLOTS + p.slotIdx;
+}
+
+function keysInRowMajorRange(columns: DayColumn[], a: CellPos, b: CellPos): string[] {
+  const lo = Math.min(cellLinearIndex(a), cellLinearIndex(b));
+  const hi = Math.max(cellLinearIndex(a), cellLinearIndex(b));
+  const keys: string[] = [];
+  for (let L = lo; L <= hi; L++) {
+    const dayIdx = Math.floor(L / SLOTS);
+    const slotIdx = L % SLOTS;
+    const col = columns[dayIdx];
+    if (!col) continue;
+    keys.push(keyForSlot(slotIdx, col.date));
+  }
+  return keys;
+}
 
 export type SlotWho = {
   nickname: string;
@@ -113,11 +132,8 @@ export function TimeGrid({
   const dragSelect = useRef(true);
   const dragAnchor = useRef<CellPos | null>(null);
   const dragSnapshot = useRef<Set<string> | null>(null);
-  /** Shift+클릭 구간의 시작점(직전 클릭 또는 마지막 일반 클릭 칸) */
+  /** Shift+클릭 시 구간 시작점(마지막으로 Shift 없이 누른 칸 — 탐색기 앵커와 동일) */
   const shiftAnchorRef = useRef<CellPos | null>(null);
-  /** 마지막 일반 클릭으로 “기준”으로 삼은 칸(Shift 직사각형 모드는 이 칸을 눌렀을 때의 선택 여부만 사용) */
-  const shiftDesignatedAnchorRef = useRef<CellPos | null>(null);
-  const shiftBaselineHadSlotRef = useRef(false);
 
   const [overlapPopover, setOverlapPopover] = useState<OverlapPopoverState | null>(null);
   const leaveOverlapTimerRef = useRef<number | null>(null);
@@ -289,17 +305,9 @@ export function TimeGrid({
       const anchor = shiftAnchorRef.current;
       const cols = columnsRef.current;
       if (anchor && (anchor.dayIdx !== pos.dayIdx || anchor.slotIdx !== pos.slotIdx)) {
-        const designated = shiftDesignatedAnchorRef.current;
-        const sameDesignated =
-          designated != null &&
-          designated.dayIdx === anchor.dayIdx &&
-          designated.slotIdx === anchor.slotIdx;
-        const anchorKey = keyForSlot(anchor.slotIdx, cols[anchor.dayIdx]!.date);
-        /** 일반 클릭으로 지정한 기준 칸이면, 그때의 선택 여부로 채움/비움. 연속 Shift만 쓴 경우는 당시 선택 기준 */
-        const selectRect = sameDesignated ? !shiftBaselineHadSlotRef.current : !selected.has(anchorKey);
-        dragSnapshot.current = new Set(selected);
-        dragSelect.current = selectRect;
-        applyRectFromSnapshot(anchor, pos, selectRect);
+        /** Windows 탐색기처럼: 앵커~클릭 칸 사이(표 읽기 순서 연속)만 선택으로 바꿈 */
+        const rangeKeys = keysInRowMajorRange(cols, anchor, pos);
+        onCellsChange(() => new Set(rangeKeys));
       }
       shiftAnchorRef.current = pos;
       return;
@@ -307,8 +315,6 @@ export function TimeGrid({
 
     const key = keyForSlot(slotIdx, columnsRef.current[dayIdx]!.date);
     shiftAnchorRef.current = pos;
-    shiftDesignatedAnchorRef.current = pos;
-    shiftBaselineHadSlotRef.current = selected.has(key);
 
     onDragUndoSessionStart?.();
 
@@ -605,14 +611,14 @@ export function TimeGrid({
           있으면 연한 파란 배경에 숫자만 보입니다.
         </p>
         <p>
-          <strong>Shift</strong>로 다른 칸을 누르면, <strong>바로 직전 일반 클릭</strong>으로 찍은 칸부터 그
-          칸까지 직사각형이 적용됩니다. 채움/비움은 그 <strong>일반 클릭 순간</strong>에 그 칸이 비어 있었는지
-          여부로 정해지며, 그 사이에 다른 칸만 바뀌어도 기준은 변하지 않습니다. 연속으로 Shift만 이어 쓸 때는
-          직전 칸을 기준으로 당시 선택 상태를 봅니다.
+          <strong>Shift+클릭</strong>은 Windows 탐색기와 같습니다. <strong>Shift 없이 마지막으로 누른 칸</strong>
+          부터 Shift를 누른 채로 다른 칸을 누르면, 표를 읽는 순서(위쪽 날짜부터, 각 날은{" "}
+          <strong>09:00→24:00</strong> 왼쪽부터)로 그 사이에 있는 <strong>연속 구간만</strong> 가능으로
+          바뀌고, 그 밖에 켜 두었던 칸은 모두 꺼집니다. 다음 Shift는 방금 누른 칸이 새 앵커가 됩니다.
         </p>
         <p>
-          Shift 없이 드래그하면 기준 칸에서 포인터를 움직이며 같은 방식으로 직사각형을 선택·해제합니다. 당일{" "}
-          <strong>09:00–24:00</strong>만 표시합니다.
+          Shift 없이 드래그하면 기준 칸에서 포인터를 움직이며 <strong>직사각형</strong>으로 선택·해제합니다.
+          당일 <strong>09:00–24:00</strong>만 표시합니다.
         </p>
         <p className="md:hidden">
           <strong>모바일:</strong> 표 아래 <strong>이전·다음 시간</strong> 버튼, 맨 아래{" "}
