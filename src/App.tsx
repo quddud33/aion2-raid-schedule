@@ -394,16 +394,19 @@ export function App() {
         </div>
       )}
 
-      <MatchSummary
-        participants={rows.map((r) => ({
-          nickname: r.nickname,
-          server_name: r.server_name,
-          slots: r.slots,
-        }))}
-      />
+      <div className="flex flex-col gap-8 md:flex-row md:items-start md:gap-8">
+        <div className="min-w-0 flex-1">
+          <MatchSummary
+            participants={rows.map((r) => ({
+              nickname: r.nickname,
+              server_name: r.server_name,
+              slots: r.slots,
+            }))}
+          />
+        </div>
 
-      <aside className={`space-y-4 ${card}`}>
-        <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">내 정보</h2>
+        <aside className={`w-full shrink-0 space-y-4 md:max-w-sm ${card}`}>
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">내 정보</h2>
         <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">
           캐릭터 닉네임
           <input
@@ -445,25 +448,10 @@ export function App() {
             내 행 삭제
           </button>
         </div>
-      </aside>
+        </aside>
+      </div>
 
-      <section className="space-y-4">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
-              내 가능 시간{" "}
-              <span className="font-medium text-slate-500 dark:text-slate-400">
-                ({raidType === "rudra" ? "루드라" : "바고트"})
-              </span>
-            </h2>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              표는 위에서부터 금주(수~화) 7일, 이어서{" "}
-              <span className="font-medium text-violet-700 dark:text-violet-300">차주</span> 7일입니다. 시간은
-              24시간제입니다.
-            </p>
-          </div>
-          {loading && <span className="text-xs text-slate-500 dark:text-slate-400">불러오는 중…</span>}
-        </div>
+      <section>
         <TimeGrid
           columns={columns}
           selected={mySlots}
@@ -472,6 +460,26 @@ export function App() {
           onDragUndoSessionEnd={endSlotUndoDragSession}
           heatCount={heatCount}
           whoBySlot={whoBySlot}
+          scheduleIntro={
+            <>
+              <div>
+                <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
+                  내 가능 시간{" "}
+                  <span className="font-medium text-slate-500 dark:text-slate-400">
+                    ({raidType === "rudra" ? "루드라" : "바고트"})
+                  </span>
+                </h2>
+                <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                  표는 위에서부터 금주(수~화) 7일, 이어서{" "}
+                  <span className="font-medium text-violet-700 dark:text-violet-300">차주</span> 7일입니다.
+                  시간은 24시간제입니다.
+                </p>
+              </div>
+              {loading && (
+                <span className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">불러오는 중…</span>
+              )}
+            </>
+          }
         />
       </section>
 

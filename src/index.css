@@ -5,15 +5,15 @@
 html,
 body,
 #root {
-  height: 100%;
+  min-height: 100%;
 }
 
 body {
-  @apply min-h-full bg-gradient-to-br from-sky-50 via-white to-pink-50 text-slate-800 antialiased transition-colors duration-200;
+  @apply bg-sky-50 text-slate-800 antialiased transition-colors duration-200;
 }
 
 html.dark body {
-  @apply from-slate-950 via-slate-900 to-slate-950 text-slate-100;
+  @apply bg-slate-950 text-slate-100;
 }
 
 /* 그리드 셀 드래그 시 텍스트 선택 방지 */

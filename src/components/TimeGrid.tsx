@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { DayColumn } from "../lib/slots";
 import { slotKey } from "../lib/slots";
@@ -84,6 +84,8 @@ type Props = {
   heatCount?: Map<string, number>;
   /** 슬롯 키별 겹침 인원(닉·서버) — 호버 툴팁용 */
   whoBySlot?: Map<string, SlotWho[]>;
+  /** 표 카드 상단(제목·설명 등) — 하단 도움말과 같은 카드 안 */
+  scheduleIntro?: ReactNode;
 };
 
 export function TimeGrid({
@@ -94,6 +96,7 @@ export function TimeGrid({
   onDragUndoSessionEnd,
   heatCount,
   whoBySlot,
+  scheduleIntro,
 }: Props) {
   const columnsRef = useRef(columns);
   columnsRef.current = columns;
@@ -280,6 +283,11 @@ export function TimeGrid({
       className="slot-grid overflow-x-auto rounded-2xl border border-sky-200/80 bg-white/80 p-3 shadow-sm backdrop-blur-sm dark:border-slate-600 dark:bg-slate-900/70"
       style={{ touchAction: "none" }}
     >
+      {scheduleIntro != null && (
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-2 border-b border-sky-100/90 pb-3 dark:border-slate-700/90">
+          {scheduleIntro}
+        </div>
+      )}
       <div
         className="inline-grid gap-x-0.5 gap-y-1"
         style={{
