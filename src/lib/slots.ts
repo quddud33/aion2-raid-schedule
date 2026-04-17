@@ -62,6 +62,29 @@ export function buildRaidWeekColumns(ref: Date): DayColumn[] {
   return out;
 }
 
+/** 로컬 날짜 YYYY-MM-DD (슬롯 키의 날짜 부분과 동일 형식) */
+export function dateKeyLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** 금주·차주 열 기준으로 슬롯 키만 남김 */
+export function filterSlotsByRaidPhase(
+  keys: string[],
+  columns: DayColumn[],
+  phase: RaidWeekPhase,
+): string[] {
+  const allowed = new Set(
+    columns.filter((c) => c.raidWeek === phase).map((c) => dateKeyLocal(c.date)),
+  );
+  return keys.filter((k) => {
+    const p = parseSlotKey(k);
+    return p ? allowed.has(p.day) : false;
+  });
+}
+
 /** 교집합: 모든 참가자가 가능한 슬롯 */
 export function intersectSlots(participantSlots: string[][]): string[] {
   if (participantSlots.length === 0) return [];

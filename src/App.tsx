@@ -397,6 +397,7 @@ export function App() {
       <div className="flex flex-col gap-8 md:flex-row md:items-start md:gap-8">
         <div className="min-w-0 flex-1">
           <MatchSummary
+            columns={columns}
             participants={rows.map((r) => ({
               nickname: r.nickname,
               server_name: r.server_name,
