@@ -31,10 +31,20 @@
    - 이 프로젝트는 Supabase 익명 로그인으로 계정 UI 없이 세션만 만들고,
      닉네임/서버는 표시용으로만 저장합니다.
 
-5) 전투력 자동 갱신(Edge Function)
-   - 사이트의 「목록·전투력 갱신」은 DB 목록을 불러온 뒤, 본인 행이 있으면
-     Supabase Edge Function fetch-combat-power 가 aion2tool.com HTML을 받아 전투력을 파싱합니다.
-   - 로컬에 Supabase CLI 설치 후 프로젝트 연결, 저장소 루트에서:
-       supabase functions deploy fetch-combat-power --project-ref <프로젝트 ref>
-   - 아툴이 서버 응답에 숫자를 넣지 않으면(SPA만 렌더) 자동 갱신이 실패할 수 있습니다.
+5) 전투력 자동 갱신(Edge Function) — 「Failed to send a request to the Edge Function」일 때
+   - 사이트의 「목록·전투력 갱신」은 본인 행이 있으면 Edge Function `fetch-combat-power`를 호출합니다.
+     위 오류는 보통 **함수를 한 번도 배포하지 않았을 때** 납니다.
+   - 배포 절차 (저장소 루트에서, Node/npm 이 있으면 CLI 전역 설치 없이 npx 만으로 가능):
+       npx supabase@latest login
+       npx supabase@latest link --project-ref <Project Reference ID>
+       npx supabase@latest functions deploy fetch-combat-power
+     ※ Project Reference ID: 대시보드 → Project Settings → General → Reference ID
+       (보통 API URL https://<이값>.supabase.co 의 서브도메인과 동일합니다.)
+     ※ URL 전체를 넣지 마세요. 예: https://abcd.supabase.co → --project-ref abcd
+     ※ 배포 후: 대시보드 왼쪽 **Edge Functions** 에 `fetch-combat-power` 가 목록에 보여야 합니다.
+   - npm 스크립트: 프로젝트를 이미 link 해 두었다면
+       npm run deploy:functions
+   - 그래도 같은 오류면: 브라우저 **광고 차단**·**회사/학교망**이 supabase 도메인을 막는지,
+     `.env` / GitHub Secrets 의 `VITE_SUPABASE_URL` 이 **배포한 프로젝트와 동일한지** 확인합니다.
+   - 아툴 HTML에 전투력이 없으면(SPA만 렌더) 자동 갱신은 다른 이유로 실패할 수 있습니다.
      그때는 npm run aion2tool:power 또는 표에서 수동 입력을 사용합니다.

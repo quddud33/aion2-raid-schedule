@@ -46,6 +46,26 @@ const fmt24 = (d: Date) =>
     hour12: false,
   });
 
+/** Edge Function invoke 실패 시 사용자에게 보여 줄 안내 */
+function formatCombatInvokeFailure(message: string): string {
+  const m = message.trim() || "알 수 없는 오류";
+  const lines = [
+    `전투력 자동 갱신에 실패했습니다. (${m})`,
+    "",
+    "가장 흔한 원인: Supabase에 `fetch-combat-power` 함수를 아직 배포하지 않은 경우입니다.",
+    "1) PC 터미널에서 이 저장소 루트로 이동합니다.",
+    "2) npx supabase@latest login",
+    "3) npx supabase@latest link --project-ref <값>",
+    "   ※ Project Reference ID: Supabase 대시보드 → Project Settings → General",
+    "4) npx supabase@latest functions deploy fetch-combat-power",
+    "5) 대시보드 → Edge Functions 메뉴에 `fetch-combat-power`가 나타나는지 확인합니다.",
+    "",
+    "그 외: 브라우저 광고 차단·회사망이 *.supabase.co 요청을 막는지 확인합니다.",
+    "당분간은 표의 수동 입력 후「전투력 반영」을 사용할 수 있습니다.",
+  ];
+  return lines.join("\n");
+}
+
 export function App() {
   const [raidType, setRaidType] = useState<RaidType>("rudra");
   const [nickname, setNickname] = useState("");
@@ -155,9 +175,7 @@ export function App() {
             body: { serverId: sid, nickname: mine.nickname },
           });
           if (fnErr) {
-            setRefreshNote(
-              `전투력 자동 갱신을 건너뜁니다 (${fnErr.message}). Supabase에 fetch-combat-power 함수를 배포했는지 확인하거나 수동 입력을 사용해 주세요.`,
-            );
+            setRefreshNote(formatCombatInvokeFailure(fnErr.message));
           } else if (fnData && typeof fnData === "object") {
             const fd = fnData as { ok?: boolean; error?: string; combat_power?: string };
             if (fd.ok === true && typeof fd.combat_power === "string" && fd.combat_power.length > 0) {
@@ -676,7 +694,9 @@ export function App() {
           </div>
         </div>
         {refreshNote && (
-          <p className="mt-2 text-xs leading-relaxed text-slate-600 dark:text-slate-400">{refreshNote}</p>
+          <p className="mt-2 whitespace-pre-line rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-xs leading-relaxed text-slate-700 dark:border-slate-600 dark:bg-slate-800/60 dark:text-slate-300">
+            {refreshNote}
+          </p>
         )}
         <div className="mt-4 overflow-x-auto">
           <table className="w-full min-w-[640px] border-collapse text-left text-sm">
