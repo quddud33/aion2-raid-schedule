@@ -31,8 +31,9 @@
    - 이 프로젝트는 Supabase 익명 로그인으로 계정 UI 없이 세션만 만들고,
      닉네임/서버는 표시용으로만 저장합니다.
 
-5) 전투력 자동 갱신(Edge Function) — 「Failed to send a request to the Edge Function」일 때
-   - 사이트의 「목록·전투력 갱신」은 본인 행이 있으면 Edge Function `fetch-combat-power`를 호출합니다.
+5) 전투력·템렙 자동 갱신(Edge Function) — 「Failed to send a request to the Edge Function」일 때
+   - 「목록·전투력 갱신」은 본인 행이 있으면 `fetch-combat-power`가 **플레이NC** https://aion2.plaync.com
+     캐릭터 검색(race=2 마족 → race=1 천족) 후 프로필 HTML에서 전투력·아이템 레벨을 읽습니다.
      위 오류는 보통 **함수를 한 번도 배포하지 않았을 때** 납니다.
    - 배포 절차 (저장소 루트에서, Node/npm 이 있으면 CLI 전역 설치 없이 npx 만으로 가능):
        npx supabase@latest login
@@ -52,5 +53,5 @@
    - 대시보드에 함수가 있는데도 **「non-2xx status code」**만 보이면: (1) Edge 를 최신으로 `npm run deploy:functions`
      (2) **GitHub Pages 프론트도** 저장소 최신을 main 에 푸시해 Actions 로 다시 빌드·배포 (브라우저가 옛날 JS 를 쓰면
      오류 본문을 읽는 패치·Authorization 헤더가 반영되지 않을 수 있음).
-   - 아툴 HTML에 전투력이 없으면(SPA만 렌더) 자동 갱신은 다른 이유로 실패할 수 있습니다.
-     그때는 npm run aion2tool:power 또는 표에서 수동 입력을 사용합니다.
+   - 플레이NC HTML에 전투력·템렙 블록이 없으면(SPA만 렌더) 자동 갱신이 실패할 수 있습니다.
+     그때는 표에서 수동 입력하거나 npm run aion2tool:power(아툴·Playwright)를 사용합니다.

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MatchSummary } from "./components/MatchSummary";
 import { TimeGrid } from "./components/TimeGrid";
-import { AION2TOOL_HOME, buildAion2toolCharUrl, resolveAion2toolServerId } from "./lib/aion2toolCharUrl";
+import { resolveAion2toolServerId } from "./lib/aion2toolCharUrl";
+import { buildPlayncSearchUrl, PLAYNC_CHAR_INDEX } from "./lib/playncCharUrl";
 import { buildRaidWeekColumns } from "./lib/slots";
 import { supabase, supabaseConfigured } from "./lib/supabase";
 
@@ -254,7 +255,7 @@ export function App() {
               else {
                 const second = await fetchRowsFromDb();
                 if (second.ok) setRows(second.rows);
-                setRefreshNote("전투력을 아툴에서 가져와 반영했습니다.");
+                setRefreshNote("전투력·템렙을 플레이NC 공식에서 가져와 반영했습니다.");
               }
             } else {
               setRefreshNote(fd.error ?? "전투력을 페이지에서 찾지 못했습니다.");
@@ -262,7 +263,9 @@ export function App() {
             }
           }
         } else {
-          setRefreshNote("서버명이 아툴 목록과 맞지 않아 전투력 자동 갱신을 건너뜁니다.");
+          setRefreshNote(
+            "서버명이 내부 서버 ID 목록과 맞지 않아 전투력 자동 갱신을 건너뜁니다. (플레이NC 검색에 쓰는 serverId)",
+          );
         }
       }
     }
@@ -727,7 +730,7 @@ export function App() {
             <button
               type="button"
               disabled={loading || !authReady}
-              title="등록 목록을 불러오고, 본인 행이 있으면 아툴에서 전투력을 자동 조회해 반영합니다."
+              title="등록 목록을 불러오고, 본인 행이 있으면 플레이NC 공식(캐릭터 정보실)에서 전투력·템렙을 조회해 반영합니다."
               onClick={() => void onRefreshParticipants()}
               className="min-h-[36px] rounded-lg border border-sky-200 bg-white px-3 py-1.5 font-medium text-slate-700 shadow-sm hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
             >
@@ -739,15 +742,16 @@ export function App() {
             <span className="max-w-md leading-relaxed">
               「목록·전투력 갱신」은 DB 목록을 다시 불러오고, 본인이 등록돼 있으면{" "}
               <a
-                href={AION2TOOL_HOME}
+                href={PLAYNC_CHAR_INDEX}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="font-medium text-sky-600 underline-offset-2 hover:underline dark:text-sky-400"
               >
-                아툴
+                플레이NC 캐릭터 정보실
               </a>
-              에서 전투력을 자동 조회해 저장합니다(Supabase Edge Function 배포 필요). 실패 시 본인 행에서 수동
-              입력·「전투력 반영」을 쓰면 됩니다. 행의「아툴」은 해당 닉·서버 링크입니다.
+              에서 전투력·템렙을 자동 조회해 저장합니다(Supabase Edge Function 배포 필요). 검색은 마족(race=2) 후
+              천족(race=1) 순입니다. 실패 시 본인 행에서 수동 입력·「전투력 반영」을 쓰면 됩니다. 행의「공식」은
+              마족 기준 검색 링크입니다(천족은 링크에서 race=1로 바꿔 보세요).
             </span>
             <span className="tabular-nums text-slate-500 dark:text-slate-400">{rows.length}명</span>
           </div>
@@ -775,7 +779,8 @@ export function App() {
             </thead>
             <tbody>
               {rows.map((r) => {
-                const charUrl = buildAion2toolCharUrl(r.server_name, r.nickname);
+                const sidRow = resolveAion2toolServerId(r.server_name);
+                const charUrl = sidRow ? buildPlayncSearchUrl(sidRow, r.nickname, 2) : null;
                 const isMine = myUserId !== null && r.user_id === myUserId;
                 return (
                   <tr
@@ -792,12 +797,13 @@ export function App() {
                             {r.combat_power?.trim() ? r.combat_power : "—"}
                           </span>
                           <a
-                            href={charUrl ?? AION2TOOL_HOME}
+                            href={charUrl ?? PLAYNC_CHAR_INDEX}
                             target="_blank"
                             rel="noopener noreferrer"
+                            title="플레이NC 검색(기본 마족 race=2). 천족은 URL의 race=1로 변경"
                             className="shrink-0 font-medium text-sky-600 underline-offset-2 hover:underline dark:text-sky-400"
                           >
-                            아툴
+                            공식
                           </a>
                         </div>
                         {r.combat_power_updated_at && (
@@ -811,7 +817,7 @@ export function App() {
                               className="box-border min-h-[40px] w-full min-w-0 flex-1 rounded-md border border-sky-200 bg-white px-2 py-2 text-sm text-slate-800 outline-none focus:border-sky-400 focus:ring-1 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900 sm:min-h-0 sm:py-1.5"
                               value={myCombatDraft}
                               onChange={(e) => setMyCombatDraft(e.target.value)}
-                              placeholder="예: 12,345 (달성 최고 등)"
+                              placeholder="예: 523.9K / 4,144 (전투력 / 템렙)"
                               maxLength={48}
                               disabled={saving}
                               aria-label="내 전투력 입력"
