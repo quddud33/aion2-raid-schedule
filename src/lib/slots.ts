@@ -13,31 +13,50 @@ export function parseSlotKey(key: string): { day: string; minutes: number } | nu
   return { day: m[1]!, minutes: Number(m[2]) };
 }
 
-/** 표시용: 30분 단위 라벨 */
+/** 표시용: 30분 단위, 24시간제 (예: 18:30, 익일 01:00 → 01:00) */
 export function formatMinuteLabel(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const mm = minutes % 60;
   return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
+export type RaidWeekPhase = "current" | "next";
+
 export type DayColumn = {
   date: Date;
   label: string;
   short: string;
+  /** 레이드 주(수~화) 기준: 금주 7일 + 차주 7일 */
+  raidWeek: RaidWeekPhase;
 };
 
-export function buildWeekColumns(start: Date, dayCount: number): DayColumn[] {
+/**
+ * 이번 레이드 주의 시작일 = 가장 최근 수요일 00:00(로컬).
+ * 수~화가 한 주이며, 수요일에 초기화된다고 가정.
+ */
+export function startOfRaidWeekWednesday(ref: Date): Date {
+  const d = new Date(ref);
+  d.setHours(0, 0, 0, 0);
+  const dow = d.getDay();
+  const offset = (dow - 3 + 7) % 7;
+  d.setDate(d.getDate() - offset);
+  return d;
+}
+
+/** 금주·차주 각 7일(수~화), 총 14칸 */
+export function buildRaidWeekColumns(ref: Date): DayColumn[] {
+  const start = startOfRaidWeekWednesday(ref);
   const out: DayColumn[] = [];
-  const base = new Date(start);
-  base.setHours(0, 0, 0, 0);
-  for (let i = 0; i < dayCount; i++) {
-    const d = new Date(base);
-    d.setDate(base.getDate() + i);
-    const w = ["일", "월", "화", "수", "목", "금", "토"][d.getDay()]!;
+  for (let i = 0; i < 14; i++) {
+    const date = new Date(start);
+    date.setDate(start.getDate() + i);
+    const w = ["일", "월", "화", "수", "목", "금", "토"][date.getDay()]!;
+    const raidWeek: RaidWeekPhase = i < 7 ? "current" : "next";
     out.push({
-      date: d,
-      label: `${d.getMonth() + 1}/${d.getDate()} (${w})`,
-      short: `${d.getMonth() + 1}/${d.getDate()}`,
+      date,
+      label: `${date.getMonth() + 1}/${date.getDate()} (${w})`,
+      short: `${date.getMonth() + 1}/${date.getDate()} ${w}`,
+      raidWeek,
     });
   }
   return out;
@@ -84,6 +103,7 @@ export function groupConsecutive(sortedKeys: string[]): string[][] {
   return groups;
 }
 
+/** 연속 구간을 24시간제 한 줄로 (날짜 넘어가면 양쪽 날짜 표기) */
 export function formatRangeLabel(keys: string[]): string {
   if (keys.length === 0) return "";
   const first = parseSlotKey(keys[0]!);
@@ -92,5 +112,8 @@ export function formatRangeLabel(keys: string[]): string {
   const start = formatMinuteLabel(first.minutes);
   const endMin = last.minutes + 30;
   const end = formatMinuteLabel(endMin);
-  return `${first.day} ${start}–${end}`;
+  if (first.day === last.day) {
+    return `${first.day} ${start}–${end}`;
+  }
+  return `${first.day} ${start} – ${last.day} ${end}`;
 }
