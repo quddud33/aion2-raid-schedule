@@ -104,6 +104,9 @@ export function TimeGrid({
   const dragSnapshot = useRef<Set<string> | null>(null);
   /** Shift+클릭 구간의 시작점(직전 클릭 또는 마지막 일반 클릭 칸) */
   const shiftAnchorRef = useRef<CellPos | null>(null);
+  /** 마지막 일반 클릭으로 “기준”으로 삼은 칸(Shift 직사각형 모드는 이 칸을 눌렀을 때의 선택 여부만 사용) */
+  const shiftDesignatedAnchorRef = useRef<CellPos | null>(null);
+  const shiftBaselineHadSlotRef = useRef(false);
 
   const [overlapPopover, setOverlapPopover] = useState<OverlapPopoverState | null>(null);
   const leaveOverlapTimerRef = useRef<number | null>(null);
@@ -225,21 +228,30 @@ export function TimeGrid({
       const anchor = shiftAnchorRef.current;
       const cols = columnsRef.current;
       if (anchor && (anchor.dayIdx !== pos.dayIdx || anchor.slotIdx !== pos.slotIdx)) {
+        const designated = shiftDesignatedAnchorRef.current;
+        const sameDesignated =
+          designated != null &&
+          designated.dayIdx === anchor.dayIdx &&
+          designated.slotIdx === anchor.slotIdx;
         const anchorKey = keyForSlot(anchor.slotIdx, cols[anchor.dayIdx]!.date);
-        /** 드래그와 동일: 클릭 시점 스냅샷 + 기준 칸이 비어 있으면 직사각형 채우기, 채워져 있으면 비우기 */
+        /** 일반 클릭으로 지정한 기준 칸이면, 그때의 선택 여부로 채움/비움. 연속 Shift만 쓴 경우는 당시 선택 기준 */
+        const selectRect = sameDesignated ? !shiftBaselineHadSlotRef.current : !selected.has(anchorKey);
         dragSnapshot.current = new Set(selected);
-        dragSelect.current = !selected.has(anchorKey);
-        applyRectFromSnapshot(anchor, pos, dragSelect.current);
+        dragSelect.current = selectRect;
+        applyRectFromSnapshot(anchor, pos, selectRect);
       }
       shiftAnchorRef.current = pos;
       return;
     }
 
+    const key = keyForSlot(slotIdx, columnsRef.current[dayIdx]!.date);
     shiftAnchorRef.current = pos;
+    shiftDesignatedAnchorRef.current = pos;
+    shiftBaselineHadSlotRef.current = selected.has(key);
+
     onDragUndoSessionStart?.();
 
     (e.currentTarget as HTMLButtonElement).setPointerCapture?.(e.pointerId);
-    const key = keyForSlot(slotIdx, columnsRef.current[dayIdx]!.date);
     dragSnapshot.current = new Set(selected);
     dragAnchor.current = pos;
     dragging.current = true;
@@ -408,42 +420,53 @@ export function TimeGrid({
               Math.max(overlapPopover.anchorCenterX, pad + half),
               vw - pad - half,
             );
-            const showAbove =
-              overlapPopover.anchorBottom + 200 > vh && overlapPopover.anchorTop > 88;
-            const top = showAbove ? overlapPopover.anchorTop - 8 : overlapPopover.anchorBottom + 8;
+            const maxPop = Math.min(224, Math.max(160, vh - 32));
+            const gap = 8;
+            const estBelow = overlapPopover.anchorBottom + gap + maxPop;
+            const showAbove = estBelow > vh && overlapPopover.anchorTop > 96;
+            const top = showAbove ? overlapPopover.anchorTop - gap : overlapPopover.anchorBottom + gap;
             const transform = showAbove ? "translate(-50%, -100%)" : "translateX(-50%)";
             return (
               <div
                 role="dialog"
                 aria-label={`이 시간 겹침 ${overlapPopover.heat}명`}
-                className="pointer-events-auto fixed z-[300] w-60 max-h-56 overflow-x-hidden overflow-y-auto rounded-xl border border-sky-200/95 bg-white/98 p-3 shadow-xl shadow-sky-900/10 outline-none backdrop-blur-md dark:border-slate-600 dark:bg-slate-900/98 dark:shadow-black/40"
-                style={{ left: cx, top, transform }}
+                className="pointer-events-auto fixed z-[300] flex w-60 max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-xl border border-sky-200/95 bg-white/98 shadow-xl shadow-sky-900/10 outline-none backdrop-blur-md dark:border-slate-600 dark:bg-slate-900/98 dark:shadow-black/40"
+                style={{
+                  left: cx,
+                  top,
+                  transform,
+                  maxHeight: maxPop,
+                }}
                 onPointerEnter={cancelOverlapClose}
                 onPointerLeave={scheduleOverlapClose}
               >
-                <p className="border-b border-sky-100 pb-2 text-[11px] font-semibold leading-snug text-slate-800 dark:border-slate-700 dark:text-slate-100">
-                  {overlapPopover.headline}
-                </p>
-                <p className="mt-2 text-[10px] font-medium text-sky-700 dark:text-sky-300">
-                  가능으로 표시된 인원 {overlapPopover.heat}명
-                </p>
-                {overlapPopover.who.length > 0 ? (
-                  <ul className="mt-2 space-y-1.5">
-                    {overlapPopover.who.map((p, i) => (
-                      <li
-                        key={`${overlapPopover.slotKey}-${i}-${p.nickname}`}
-                        className="flex flex-col gap-0.5 rounded-lg bg-sky-50/95 px-2 py-1.5 dark:bg-slate-800/95"
-                      >
-                        <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">
-                          {p.nickname}
-                        </span>
-                        <span className="text-[10px] text-slate-500 dark:text-slate-400">{p.server_name}</span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">표시할 닉네임이 없습니다.</p>
-                )}
+                <div className="shrink-0 border-b border-sky-100/80 px-3 pb-2 pt-3 dark:border-slate-700/90">
+                  <p className="text-[11px] font-semibold leading-snug text-slate-800 dark:text-slate-100">
+                    {overlapPopover.headline}
+                  </p>
+                  <p className="mt-1.5 text-[10px] font-medium text-sky-700 dark:text-sky-300">
+                    가능으로 표시된 인원 {overlapPopover.heat}명
+                  </p>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-2">
+                  {overlapPopover.who.length > 0 ? (
+                    <ul className="divide-y divide-sky-100/80 dark:divide-slate-700/80">
+                      {overlapPopover.who.map((p, i) => (
+                        <li
+                          key={`${overlapPopover.slotKey}-${i}-${p.nickname}`}
+                          className="flex flex-col gap-0.5 py-2.5 first:pt-1 last:pb-1"
+                        >
+                          <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">
+                            {p.nickname}
+                          </span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400">{p.server_name}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="py-1 text-xs text-slate-500 dark:text-slate-400">표시할 닉네임이 없습니다.</p>
+                  )}
+                </div>
               </div>
             );
           })(),
@@ -466,9 +489,10 @@ export function TimeGrid({
           있으면 연한 파란 배경에 숫자만 보입니다.
         </p>
         <p>
-          <strong>Shift</strong>를 누른 채 다른 칸을 누르면, 직전에 누른 칸(기준)부터 그 칸까지 직사각형이
-          드래그할 때와 <strong>같은 규칙</strong>으로 한 번에 적용됩니다. (기준 칸이 비어 있으면 그 범위를
-          채우고, 채워져 있으면 비웁니다.)
+          <strong>Shift</strong>로 다른 칸을 누르면, <strong>바로 직전 일반 클릭</strong>으로 찍은 칸부터 그
+          칸까지 직사각형이 적용됩니다. 채움/비움은 그 <strong>일반 클릭 순간</strong>에 그 칸이 비어 있었는지
+          여부로 정해지며, 그 사이에 다른 칸만 바뀌어도 기준은 변하지 않습니다. 연속으로 Shift만 이어 쓸 때는
+          직전 칸을 기준으로 당시 선택 상태를 봅니다.
         </p>
         <p>
           Shift 없이 드래그하면 기준 칸에서 포인터를 움직이며 같은 방식으로 직사각형을 선택·해제합니다. 당일{" "}
