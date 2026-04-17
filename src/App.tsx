@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FunctionsHttpError } from "@supabase/supabase-js";
 import { MatchSummary } from "./components/MatchSummary";
 import { TimeGrid } from "./components/TimeGrid";
 import { AION2TOOL_HOME, buildAion2toolCharUrl, resolveAion2toolServerId } from "./lib/aion2toolCharUrl";
@@ -49,6 +50,17 @@ const fmt24 = (d: Date) =>
 /** Edge Function invoke 실패 시 사용자에게 보여 줄 안내 */
 function formatCombatInvokeFailure(message: string): string {
   const m = message.trim() || "알 수 없는 오류";
+  if (/non-2xx/i.test(m)) {
+    return [
+      `전투력 자동 갱신에 실패했습니다. (${m})`,
+      "",
+      "함수가 대시보드에 있어도, 예전 배포본이 HTTP 401·400 등을 쓰면 브라우저 라이브러리가 본문 대신 이 메시지만 보여 줄 수 있습니다.",
+      "→ 저장소를 최신으로 받은 뒤 다시 배포: npm run deploy:functions",
+      "→ 대시보드 → Edge Functions → fetch-combat-power → Logs 에서 실제 응답을 확인할 수 있습니다.",
+      "",
+      "목록은 이미 갱신된 상태입니다. 수동 입력·「전투력 반영」도 그대로 사용할 수 있습니다.",
+    ].join("\n");
+  }
   const lines = [
     `전투력 자동 갱신에 실패했습니다. (${m})`,
     "",
@@ -64,6 +76,18 @@ function formatCombatInvokeFailure(message: string): string {
     "당분간은 표의 수동 입력 후「전투력 반영」을 사용할 수 있습니다.",
   ];
   return lines.join("\n");
+}
+
+async function readCombatInvokeHttpError(err: FunctionsHttpError): Promise<string | null> {
+  try {
+    const ct = err.context.headers.get("Content-Type") ?? "";
+    if (!ct.includes("application/json")) return null;
+    const body = (await err.context.json()) as { ok?: boolean; error?: string };
+    if (typeof body.error === "string" && body.error.length > 0) return body.error;
+  } catch {
+    /* ignore */
+  }
+  return null;
 }
 
 export function App() {
@@ -174,7 +198,14 @@ export function App() {
           const { data: fnData, error: fnErr } = await supabase.functions.invoke("fetch-combat-power", {
             body: { serverId: sid, nickname: mine.nickname },
           });
-          if (fnErr) {
+          if (fnErr instanceof FunctionsHttpError) {
+            const fromBody = await readCombatInvokeHttpError(fnErr);
+            setRefreshNote(
+              fromBody
+                ? `${fromBody}\n\n(예전 함수가 4xx를 반환한 경우, 저장소 최신 코드로 재배포하면 invoke가 본문을 정상적으로 받습니다. npm run deploy:functions)`
+                : formatCombatInvokeFailure(fnErr.message),
+            );
+          } else if (fnErr) {
             setRefreshNote(formatCombatInvokeFailure(fnErr.message));
           } else if (fnData && typeof fnData === "object") {
             const fd = fnData as { ok?: boolean; error?: string; combat_power?: string };

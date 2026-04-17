@@ -55,17 +55,19 @@ Deno.serve(async (req: Request) => {
 
   const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json; charset=utf-8" };
 
+  // 주의: 4xx/5xx 를 쓰면 supabase-js functions.invoke 가 "non-2xx" 로만 알려 줘서
+  // 클라이언트가 본문(ok:false)을 못 읽는 경우가 있음 → 앱 레벨 오류는 항상 200 + JSON.
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ ok: false, error: "POST only" }), {
-      status: 405,
+      status: 200,
       headers: jsonHeaders,
     });
   }
 
   const authHeader = req.headers.get("Authorization");
   if (!authHeader) {
-    return new Response(JSON.stringify({ ok: false, error: "Authorization 헤더가 필요합니다." }), {
-      status: 401,
+    return new Response(JSON.stringify({ ok: false, error: "Authorization 헤더가 없습니다. 로그인(익명) 후 다시 시도해 주세요." }), {
+      status: 200,
       headers: jsonHeaders,
     });
   }
@@ -78,10 +80,13 @@ Deno.serve(async (req: Request) => {
 
   const { data: userData, error: userErr } = await supabase.auth.getUser();
   if (userErr || !userData.user) {
-    return new Response(JSON.stringify({ ok: false, error: "세션이 올바르지 않습니다." }), {
-      status: 401,
-      headers: jsonHeaders,
-    });
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: `세션 확인 실패: ${userErr?.message ?? "user 없음"}. 페이지를 새로고침한 뒤 다시 시도해 주세요.`,
+      }),
+      { status: 200, headers: jsonHeaders },
+    );
   }
 
   let body: { serverId?: string; nickname?: string };
@@ -89,7 +94,7 @@ Deno.serve(async (req: Request) => {
     body = (await req.json()) as { serverId?: string; nickname?: string };
   } catch {
     return new Response(JSON.stringify({ ok: false, error: "JSON 본문이 필요합니다." }), {
-      status: 400,
+      status: 200,
       headers: jsonHeaders,
     });
   }
@@ -98,13 +103,13 @@ Deno.serve(async (req: Request) => {
   const nickname = String(body.nickname ?? "").trim();
   if (!/^\d+$/.test(serverId)) {
     return new Response(JSON.stringify({ ok: false, error: "serverId가 올바르지 않습니다." }), {
-      status: 400,
+      status: 200,
       headers: jsonHeaders,
     });
   }
   if (nickname.length < 1 || nickname.length > 24) {
     return new Response(JSON.stringify({ ok: false, error: "닉네임은 1~24자여야 합니다." }), {
-      status: 400,
+      status: 200,
       headers: jsonHeaders,
     });
   }
