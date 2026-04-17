@@ -48,6 +48,25 @@ function buildCombatDisplay(best: string | null, current: string | null): string
   return null;
 }
 
+/** 아툴 캐릭터 HTML의 메인 전투력(#combat-power-main-value). 평문 정규식은 랭킹 % 등 오탐이 나기 쉬움 */
+function extractCombatPowerMainFromHtml(html: string): string | null {
+  const re = /id\s*=\s*["']combat-power-main-value["'][^>]*>\s*([^<]+?)\s*</gi;
+  let pick: string | null = null;
+  let pickNum = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const digits = (m[1] ?? "").replace(/\u00a0/g, " ").replace(/[^\d,]/g, "").trim();
+    if (!/^[\d,]+$/.test(digits)) continue;
+    const n = Number(digits.replace(/,/g, ""));
+    if (!Number.isFinite(n) || n < 1) continue;
+    if (n >= pickNum) {
+      pickNum = n;
+      pick = digits;
+    }
+  }
+  return pick;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -147,9 +166,17 @@ Deno.serve(async (req: Request) => {
   }
 
   const html = await res.text();
-  const t = stripHtmlForText(html);
-  const { best, current } = parseCombat(t);
-  const combat_power = buildCombatDisplay(best, current);
+  const fromMainDiv = extractCombatPowerMainFromHtml(html);
+  let combat_power: string | null = fromMainDiv ? fromMainDiv.slice(0, 48) : null;
+  let best: string | null = null;
+  let current: string | null = null;
+  if (!combat_power) {
+    const t = stripHtmlForText(html);
+    const parsed = parseCombat(t);
+    best = parsed.best;
+    current = parsed.current;
+    combat_power = buildCombatDisplay(best, current);
+  }
   if (!combat_power) {
     return new Response(
       JSON.stringify({
@@ -159,6 +186,13 @@ Deno.serve(async (req: Request) => {
       }),
       { status: 200, headers: jsonHeaders },
     );
+  }
+
+  if (fromMainDiv) {
+    const t = stripHtmlForText(html);
+    const parsed = parseCombat(t);
+    best = parsed.best;
+    current = parsed.current;
   }
 
   return new Response(

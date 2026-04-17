@@ -37,10 +37,17 @@ async function waitForCombatNumbers(page, timeoutMs) {
       const { currentCombat, bestCombat } = (() => {
         let currentCombat = null;
         let bestCombat = null;
+        const mainEl = document.getElementById("combat-power-main-value");
+        if (mainEl) {
+          const digits = (mainEl.textContent ?? "").replace(/[^\d,]/g, "").trim();
+          if (/^[\d,]+$/.test(digits)) currentCombat = digits;
+        }
         const best = t.match(/달성\s*최고\s*전투력[\s\S]{0,80}?([\d,]+)/);
         if (best) bestCombat = best[1];
-        const cur1 = t.match(/현재\s*전투력[\s\S]{0,60}?([\d,]+)/);
-        if (cur1 && /^[\d,]+$/.test(cur1[1].trim())) currentCombat = cur1[1].trim();
+        if (!currentCombat) {
+          const cur1 = t.match(/현재\s*전투력[\s\S]{0,60}?([\d,]+)/);
+          if (cur1 && /^[\d,]+$/.test(cur1[1].trim())) currentCombat = cur1[1].trim();
+        }
         if (!currentCombat) {
           const lines = t.split(/\r?\n/).map((s) => s.trim());
           const idx = lines.findIndex((l) => /현재\s*전투력/.test(l));
