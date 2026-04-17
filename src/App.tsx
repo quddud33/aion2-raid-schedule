@@ -416,7 +416,7 @@ export function App() {
             className="mt-1 box-border min-h-[44px] w-full max-w-full rounded-lg border border-sky-200 bg-white px-3 py-2.5 text-base text-slate-800 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900 sm:min-h-0 sm:py-2 sm:text-sm"
             value={nickname}
             onChange={(e) => setNickname(e.target.value)}
-            placeholder="예: 가을바람"
+            placeholder="예: 반갑꼬리"
             maxLength={24}
           />
         </label>
