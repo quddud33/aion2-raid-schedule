@@ -1,0 +1,32 @@
+아이온2 성역 일정 사이트 — GitHub Pages + Supabase 설정
+
+1) Supabase (무료)
+   - https://supabase.com 에서 프로젝트 생성
+   - SQL Editor에서 supabase/schema.sql 내용 실행
+   - Authentication → Providers → Anonymous sign-ins 켜기
+   - Project Settings → API 에서 URL / anon public key 복사
+
+2) 로컬 개발
+   - 프로젝트 루트에 .env 파일 생성:
+
+     VITE_SUPABASE_URL=https://xxxx.supabase.co
+     VITE_SUPABASE_ANON_KEY=eyJhbGciOi...
+
+   - npm install
+   - npm run dev
+
+3) GitHub Pages (Actions 빌드)
+   - 저장소 Settings → Secrets and variables → Actions
+     - VITE_SUPABASE_URL
+     - VITE_SUPABASE_ANON_KEY
+     - (선택) VITE_BASE
+       * 기본값: /<저장소이름>/  (예: https://user.github.io/repo-name/)
+       * <계정>.github.io 의 루트 저장소(사용자 페이지)처럼 경로가 '/' 여야 하면 VITE_BASE 를 "/" 로 지정
+   - Settings → Pages → Build and deployment → Source: GitHub Actions
+   - main(또는 master)에 푸시하면 자동 배포
+   - 사이트 주소: https://<계정>.github.io/<저장소이름>/
+
+4) 정적 호스팅만으로 한계
+   - 브라우저만으로 안전하게 “누구나 쓰기”를 열려면 백엔드가 필요합니다.
+   - 이 프로젝트는 Supabase 익명 로그인으로 계정 UI 없이 세션만 만들고,
+     닉네임/서버는 표시용으로만 저장합니다.

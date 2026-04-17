@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-950 text-slate-100 antialiased;
+}
+
+/* 그리드 셀 드래그 시 텍스트 선택 방지 */
+.slot-grid {
+  user-select: none;
+  -webkit-user-select: none;
+}

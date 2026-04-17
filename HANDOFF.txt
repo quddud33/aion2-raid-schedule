@@ -1,0 +1,41 @@
+프로젝트 요약 (AI 인수인계용)
+목적
+아이온2 성역(레이드) 일정 관리 정적 웹앱: 루드라 / 바고트 탭, 최대 8인 파티 가정하되 가능 시간 적은 인원들끼리 교집합으로 맞춤.
+GitHub Pages 배포, 데이터는 정적만으로 불가 → Supabase(PostgreSQL + REST/Realtime) 사용.
+별도 회원가입 UI 없음: Supabase 익명 로그인 + 화면에서 캐릭 닉네임 + 서버 입력 후 저장.
+기술 스택
+Vite 5 + React 18 + TypeScript + Tailwind 3
+@supabase/supabase-js — signInAnonymously(), upsert, Realtime 구독
+빌드 시 import.meta.env.VITE_SUPABASE_* 주입
+주요 파일
+src/App.tsx — 레이드 탭, 익명 세션, 목록 로드/저장/삭제, 교집합용 데이터
+src/components/TimeGrid.tsx — 7일 × 매일 18:00~익일 06:00, 30분 단위, 클릭+드래그 선택; 타인 겹침 수 heat 오버레이
+src/components/MatchSummary.tsx — 전원 교집합 구간 뱃지 + 상세 목록
+src/lib/slots.ts — 슬롯 키 YYYY-MM-DD@MMMM (분 4자리 패딩, 문자열 정렬 안전)
+src/lib/supabase.ts — URL/anon 없으면 “환경 변수 없음” 안내 화면
+supabase/schema.sql — 테이블 raid_availability, RLS, (선택) realtime publication
+.github/workflows/pages.yml — push 시 빌드 후 GitHub Pages 배포; Secrets 없으면 빌드 실패하도록 스크립트 있음
+배포및설정.txt — 한글 배포/Supabase 절차
+.env.example — VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+.gitignore — node_modules, dist, .env 등
+Supabase 쪽 필수 작업
+SQL Editor에서 supabase/schema.sql 전체 실행
+Authentication → Providers → Anonymous: Allow / Enable anonymous sign-ins 켜기
+Project Settings → API에서 Project URL → VITE_SUPABASE_URL, anon public → VITE_SUPABASE_ANON_KEY (service_role 금지)
+GitHub 쪽
+저장소 이름 후보로 aion2-raid-schedule 사용 논의됨(사용자가 생성 화면에서 입력한 상태).
+Settings → Secrets and variables → Actions에 VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY 등록.
+Settings → Pages → Source: GitHub Actions
+기본 VITE_BASE는 워크플로에서 /<저장소이름>/ 형태; **사용자 페이지 루트(/)**면 선택 secret VITE_BASE = / 안내함.
+로컬
+루트 .env에 위 두 변수 → npm install → npm run dev
+데이터 모델 (요지)
+테이블 raid_availability: user_id(auth.users), raid_type 'rudra'|'bagot', nickname, server_name, slots text[], unique(user_id, raid_type)
+RLS: 전체 SELECT, 본인 행만 INSERT/UPDATE/DELETE
+알려진 UX/제약
+Realtime으로 목록 갱신; 실패 시 수동 새로고침 가능.
+닉네임은 rows 동기화 시 자동 덮어쓰기 제거함 → 슬롯만 서버 데이터와 동기; 닉/서버는 사용자가 입력.
+교집합은 슬롯 1개 이상 적은 참가자만 대상.
+사용자가 할 일(이어서)
+로컬 프로젝트를 새 GitHub 저장소에 연결해 푸시 → Actions 통과 확인 → Pages URL 확인.
+Supabase·Secrets 미설정 시 빌드/앱 동작 이슈는 위 순서 재점검.
