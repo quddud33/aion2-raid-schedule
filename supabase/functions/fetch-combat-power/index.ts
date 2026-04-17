@@ -1,6 +1,6 @@
 /**
- * 플레이NC 캐릭터 검색·프로필은 초기 HTML에 목록/전투력이 없고(CSR), 서버 fetch만으로는 실패하는 것이 일반적입니다.
- * 프론트 앱은 목록 갱신 시 이 함수를 호출하지 않습니다. 수동 입력·별도 자동화(브라우저)를 권장합니다.
+ * 캐릭터 검색: 플레이NC 공식 JSON API (`/ko-kr/api/search/aion2/search/v2/character`)로 characterId 확보.
+ * 전투력·템렙: 프로필 HTML에 SSR로 내려오는 경우에만 파싱 가능(없으면 수동 입력 안내).
  */
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
@@ -37,11 +37,33 @@ async function fetchHtml(url: string, referer?: string): Promise<{ ok: boolean; 
   }
 }
 
+async function fetchJson(url: string, referer?: string): Promise<{ ok: boolean; status: number; text: string }> {
+  try {
+    const headers: Record<string, string> = {
+      "User-Agent": UA,
+      Accept: "application/json, text/plain, */*",
+      "Accept-Language": "ko-KR,ko;q=0.9",
+    };
+    if (referer) headers.Referer = referer;
+    const res = await fetch(url, {
+      headers,
+      redirect: "follow",
+    });
+    return { ok: res.ok, status: res.status, text: await res.text() };
+  } catch (e) {
+    return {
+      ok: false,
+      status: 0,
+      text: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
 function escapeRegexId(id: string): string {
   return id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** 검색 HTML·번들 JSON 등에서 프로필 URL 후보 수집 (index 제외) */
+/** 검색 HTML·번들 JSON 등에서 프로필 URL 후보 수집 (index 제외) — API 실패 시 보조 */
 function collectProfileUrls(html: string, serverId: string): string[] {
   const normalized = html.replace(/\\\//g, "/");
   const esc = escapeRegexId(serverId);
@@ -77,12 +99,134 @@ function collectProfileUrls(html: string, serverId: string): string[] {
   return out;
 }
 
-function listSearchUrl(serverId: string, nickname: string, race?: number): string {
+function listSearchPageUrl(serverId: string, nickname: string, race?: number): string {
   const q = new URLSearchParams();
   if (race !== undefined) q.set("race", String(race));
   q.set("serverId", serverId);
   q.set("keyword", nickname);
   return `${PLAYNC_ORIGIN}/ko-kr/characters/index?${q.toString()}`;
+}
+
+function characterSearchApiUrl(serverId: string, nickname: string, race?: number): string {
+  const q = new URLSearchParams({
+    keyword: nickname.trim(),
+    serverId,
+    page: "1",
+    size: "30",
+  });
+  if (race !== undefined) q.set("race", String(race));
+  return `${PLAYNC_ORIGIN}/ko-kr/api/search/aion2/search/v2/character?${q.toString()}`;
+}
+
+type SearchRow = {
+  characterId?: string;
+  name?: string;
+  serverId?: number;
+};
+
+function stripHtmlTags(s: string): string {
+  return s.replace(/<[^>]*>/g, "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** API가 %3D 등으로 줄 수 있어, 한 번 decode 후 encode 하면 경로가 올바름 */
+function encodeCharacterPathSegment(characterId: string): string {
+  const t = characterId.trim();
+  if (!t) return t;
+  try {
+    return encodeURIComponent(decodeURIComponent(t));
+  } catch {
+    return encodeURIComponent(t);
+  }
+}
+
+/** 검색 API list 에서 serverId·닉네임(HTML 제거)이 일치하는 캐릭터의 characterId */
+function pickCharacterIdFromSearchList(
+  list: SearchRow[],
+  serverId: string,
+  nickname: string,
+): string | null {
+  const want = nickname.trim();
+  const sid = String(serverId);
+  const rows = list.filter((x) => x.characterId && String(x.serverId ?? "") === sid);
+  if (rows.length === 0) return null;
+  const exact = rows.filter((x) => stripHtmlTags(x.name ?? "") === want);
+  if (exact.length >= 1) return String(exact[0]!.characterId).trim();
+  return null;
+}
+
+async function resolveProfileUrlFromSearchApi(
+  serverId: string,
+  nickname: string,
+): Promise<{ url: string | null; note?: string }> {
+  const indexRef = `${PLAYNC_ORIGIN}/ko-kr/characters/index`;
+  const searchOrders = [2, 1, undefined] as const;
+
+  for (const race of searchOrders) {
+    const apiUrl = characterSearchApiUrl(serverId, nickname, race);
+    const r = await fetchJson(apiUrl, indexRef);
+    if (!r.ok) continue;
+    let data: { list?: SearchRow[] } = {};
+    try {
+      data = JSON.parse(r.text) as { list?: SearchRow[] };
+    } catch {
+      continue;
+    }
+    const list = Array.isArray(data.list) ? data.list : [];
+    const id = pickCharacterIdFromSearchList(list, serverId, nickname);
+    if (id) {
+      const seg = encodeCharacterPathSegment(id).replace(/^\/+|\/+$/g, "");
+      if (!seg || seg === "index") continue;
+      return { url: `${PLAYNC_ORIGIN}/ko-kr/characters/${serverId}/${seg}` };
+    }
+  }
+
+  return {
+    url: null,
+    note:
+      "플레이NC 검색 API에서 일치하는 캐릭터를 찾지 못했습니다. 닉네임·서버(플레이NC serverId 매핑)·종족(마족/천족)을 확인하거나 수동 입력을 사용해 주세요.",
+  };
+}
+
+/** HTML에서 링크만 수집 (API 실패 시) */
+async function resolveProfileUrlFromHtml(
+  serverId: string,
+  nickname: string,
+): Promise<{ url: string | null; note?: string }> {
+  const indexRef = `${PLAYNC_ORIGIN}/ko-kr/characters/index`;
+  const searchOrders = [2, 1, undefined] as const;
+
+  for (const race of searchOrders) {
+    const listUrl = listSearchPageUrl(serverId, nickname, race);
+    const r = await fetchHtml(listUrl, indexRef);
+    if (!r.ok) continue;
+    const urls = collectProfileUrls(r.text, serverId);
+    if (urls.length === 0) continue;
+    if (urls.length === 1) return { url: urls[0]! };
+    for (const candidate of urls.slice(0, 10)) {
+      const d = await fetchHtml(candidate, listUrl);
+      if (!d.ok) continue;
+      const { power, item } = extractPowerAndItem(d.text);
+      if (power || item) return { url: candidate };
+    }
+  }
+  return {
+    url: null,
+    note: "검색 HTML에서 프로필 링크를 찾지 못했습니다.",
+  };
+}
+
+async function resolveProfileUrl(
+  serverId: string,
+  nickname: string,
+): Promise<{ url: string | null; note?: string }> {
+  const api = await resolveProfileUrlFromSearchApi(serverId, nickname);
+  if (api.url) return api;
+  const html = await resolveProfileUrlFromHtml(serverId, nickname);
+  if (html.url) return html;
+  return {
+    url: null,
+    note: [api.note, html.note].filter(Boolean).join(" "),
+  };
 }
 
 function extractPowerAndItem(html: string): { power: string | null; item: string | null } {
@@ -100,36 +244,6 @@ function buildCombatLine(power: string | null, item: string | null): string | nu
   if (power) return power.slice(0, 48);
   if (item) return item.slice(0, 48);
   return null;
-}
-
-/** 검색(race=2 → race=1 → race 생략) 후 URL 후보; 복수면 실제 프로필 HTML에 전투력 블록 있는 쪽만 시도 */
-async function resolveProfileUrl(
-  serverId: string,
-  nickname: string,
-): Promise<{ url: string | null; note?: string }> {
-  const indexRef = `${PLAYNC_ORIGIN}/ko-kr/characters/index`;
-  const searchOrders = [2, 1, undefined] as const;
-
-  for (const race of searchOrders) {
-    const listUrl = listSearchUrl(serverId, nickname, race);
-    const r = await fetchHtml(listUrl, indexRef);
-    if (!r.ok) continue;
-    const urls = collectProfileUrls(r.text, serverId);
-    if (urls.length === 0) continue;
-    if (urls.length === 1) return { url: urls[0]! };
-    for (const candidate of urls.slice(0, 10)) {
-      const d = await fetchHtml(candidate, listUrl);
-      if (!d.ok) continue;
-      const { power, item } = extractPowerAndItem(d.text);
-      if (power || item) return { url: candidate };
-    }
-    // 링크는 여럿인데 SSR에 전투력이 없으면 다음 검색(race 생략 등)으로 이어감
-  }
-  return {
-    url: null,
-    note:
-      "플레이NC 검색 HTML에서 프로필 링크를 찾지 못했습니다. (공식이 클라이언트만 렌더링하면 서버 fetch로는 목록이 비어 있을 수 있습니다.) 서버·닉네임·종족을 확인하거나 수동 입력을 사용해 주세요.",
-  };
 }
 
 Deno.serve(async (req: Request) => {
@@ -213,6 +327,7 @@ Deno.serve(async (req: Request) => {
       JSON.stringify({
         ok: false,
         error: `플레이NC 캐릭터 페이지 요청 실패 (HTTP ${detail.status}).`,
+        plaync_profile_url: profileUrl,
       }),
       { status: 200, headers: jsonHeaders },
     );
@@ -225,7 +340,8 @@ Deno.serve(async (req: Request) => {
       JSON.stringify({
         ok: false,
         error:
-          "전투력·아이템 레벨을 HTML에서 찾지 못했습니다. 공식 페이지가 클라이언트만 렌더링하면 수동 입력을 사용해 주세요.",
+          "캐릭터는 검색 API로 찾았으나, 전투력·템렙이 초기 HTML에 없습니다(공식이 브라우저에서만 그리는 경우).「전투력 반영」으로 수동 입력해 주세요.",
+        plaync_profile_url: profileUrl,
       }),
       { status: 200, headers: jsonHeaders },
     );

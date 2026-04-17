@@ -47,8 +47,67 @@ const fmt24 = (d: Date) =>
     hour12: false,
   });
 
-const PLAYNC_CSR_HINT =
-  "플레이NC 캐릭터 정보실은 검색 결과·전투력·템렙이 브라우저에서만 그려집니다. 서버(Edge)에서 받는 초기 HTML에는 해당 내용이 없어 자동 조회를 제공하지 않습니다. 표의 본인 행에서 전투력을 입력한 뒤「전투력 반영」을 눌러 주세요. 공식 페이지는 행의「공식」 링크로 열 수 있습니다.";
+/** Edge Function invoke 실패 시 사용자에게 보여 줄 안내 */
+function formatCombatInvokeFailure(message: string): string {
+  const m = message.trim() || "알 수 없는 오류";
+  if (/non-2xx/i.test(m)) {
+    return [
+      `전투력 자동 갱신에 실패했습니다. (${m})`,
+      "",
+      "함수가 대시보드에 있어도, 예전 배포본이 HTTP 401·400 등을 쓰면 브라우저 라이브러리가 본문 대신 이 메시지만 보여 줄 수 있습니다.",
+      "→ 저장소를 최신으로 받은 뒤 다시 배포: npm run deploy:functions",
+      "→ 대시보드 → Edge Functions → fetch-combat-power → Logs 에서 실제 응답을 확인할 수 있습니다.",
+      "",
+      "목록은 이미 갱신된 상태입니다. 수동 입력·「전투력 반영」도 그대로 사용할 수 있습니다.",
+    ].join("\n");
+  }
+  const lines = [
+    `전투력 자동 갱신에 실패했습니다. (${m})`,
+    "",
+    "가장 흔한 원인: Supabase에 `fetch-combat-power` 함수를 아직 배포하지 않은 경우입니다.",
+    "1) PC 터미널에서 이 저장소 루트로 이동합니다.",
+    "2) npx supabase@latest login",
+    "3) npx supabase@latest link --project-ref <값>",
+    "   ※ Project Reference ID: Supabase 대시보드 → Project Settings → General",
+    "4) npx supabase@latest functions deploy fetch-combat-power",
+    "5) 대시보드 → Edge Functions 메뉴에 `fetch-combat-power`가 나타나는지 확인합니다.",
+    "",
+    "그 외: 브라우저 광고 차단·회사망이 *.supabase.co 요청을 막는지 확인합니다.",
+    "당분간은 표의 수동 입력 후「전투력 반영」을 사용할 수 있습니다.",
+  ];
+  return lines.join("\n");
+}
+
+/** 번들 이슈로 instanceof FunctionsHttpError 가 실패할 수 있어 이름·context 로 판별 */
+function isLikeFunctionsHttpError(err: unknown): err is { name: string; context: Response } {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as Record<string, unknown>;
+  return e.name === "FunctionsHttpError" && e.context instanceof Response;
+}
+
+async function readCombatInvokeHttpErrorBody(err: unknown): Promise<{ text: string; status: number } | null> {
+  if (!isLikeFunctionsHttpError(err)) return null;
+  const res = err.context;
+  const status = res.status;
+  try {
+    const text = (await res.clone().text()).trim();
+    if (text.startsWith("{")) {
+      try {
+        const body = JSON.parse(text) as { error?: string; message?: string };
+        const msg =
+          (typeof body.error === "string" && body.error.length > 0 && body.error) ||
+          (typeof body.message === "string" && body.message.length > 0 && body.message) ||
+          text;
+        return { text: msg, status };
+      } catch {
+        return text ? { text, status } : null;
+      }
+    }
+    return text ? { text: text.slice(0, 800), status } : null;
+  } catch {
+    return null;
+  }
+}
 
 export function App() {
   const [raidType, setRaidType] = useState<RaidType>("rudra");
@@ -153,7 +212,70 @@ export function App() {
     if (uid) {
       const mine = first.rows.find((r) => r.user_id === uid);
       if (mine) {
-        setRefreshNote(PLAYNC_CSR_HINT);
+        const sid = resolveAion2toolServerId(mine.server_name);
+        if (sid) {
+          const { data: sessWrap } = await supabase.auth.getSession();
+          const access = sessWrap.session?.access_token;
+          if (!access) {
+            setRefreshNote(
+              "로그인 세션 토큰이 없어 전투력 자동 갱신을 건너뜁니다. 페이지를 새로고침한 뒤 다시 시도해 주세요.",
+            );
+          } else {
+            const { data: fnData, error: fnErr } = await supabase.functions.invoke("fetch-combat-power", {
+              body: { serverId: sid, nickname: mine.nickname },
+              headers: { Authorization: `Bearer ${access}` },
+            });
+            if (fnErr) {
+              const parsed = await readCombatInvokeHttpErrorBody(fnErr);
+              const baseMsg = fnErr instanceof Error ? fnErr.message : String(fnErr);
+              if (parsed) {
+                setRefreshNote(
+                  `${parsed.text}\n\n(Edge Function HTTP ${parsed.status}. 위 내용은 응답 본문에서 읽었습니다. GitHub Pages는 저장소 푸시로 프론트도 최신 배포해 주세요.)`,
+                );
+              } else {
+                setRefreshNote(formatCombatInvokeFailure(baseMsg));
+              }
+            } else if (fnData && typeof fnData === "object") {
+              const fd = fnData as {
+                ok?: boolean;
+                error?: string;
+                combat_power?: string;
+                plaync_profile_url?: string;
+              };
+              if (fd.ok === true && typeof fd.combat_power === "string" && fd.combat_power.length > 0) {
+                const { error: upErr } = await supabase.from("raid_availability").upsert(
+                  {
+                    user_id: uid,
+                    raid_type: raidType,
+                    nickname: mine.nickname,
+                    server_name: mine.server_name,
+                    slots: mine.slots,
+                    combat_power: fd.combat_power.slice(0, 48),
+                    combat_power_updated_at: new Date().toISOString(),
+                    updated_at: mine.updated_at,
+                  },
+                  { onConflict: "user_id,raid_type" },
+                );
+                if (upErr) setRefreshNote(`DB 반영 실패: ${upErr.message}`);
+                else {
+                  const second = await fetchRowsFromDb();
+                  if (second.ok) setRows(second.rows);
+                  setRefreshNote("전투력·템렙을 플레이NC(검색 API·프로필)에서 가져와 반영했습니다.");
+                }
+              } else {
+                const extra =
+                  typeof fd.plaync_profile_url === "string" && fd.plaync_profile_url.length > 0
+                    ? `\n\n프로필: ${fd.plaync_profile_url}`
+                    : "";
+                setRefreshNote(`${fd.error ?? "전투력을 가져오지 못했습니다."}${extra}`);
+              }
+            }
+          }
+        } else {
+          setRefreshNote(
+            "서버명이 내부 서버 ID 목록과 맞지 않아 전투력 자동 갱신을 건너뜁니다. (플레이NC 검색에 쓰는 serverId)",
+          );
+        }
       }
     }
     setLoading(false);
@@ -617,28 +739,30 @@ export function App() {
             <button
               type="button"
               disabled={loading || !authReady}
-              title="등록 목록을 DB에서 다시 불러옵니다. 플레이NC는 브라우저 전용 렌더링이라 전투력 자동 조회는 하지 않습니다."
+              title="DB 목록을 불러오고, 본인 행이 있으면 플레이NC 검색 JSON API로 캐릭터를 찾은 뒤 전투력·템렙을 조회합니다(Edge 배포 필요)."
               onClick={() => void onRefreshParticipants()}
               className="min-h-[36px] rounded-lg border border-sky-200 bg-white px-3 py-1.5 font-medium text-slate-700 shadow-sm hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
             >
-              {loading ? "갱신 중…" : "목록 갱신"}
+              {loading ? "갱신 중…" : "목록·전투력 갱신"}
             </button>
             <span className="hidden text-slate-300 sm:inline dark:text-slate-600" aria-hidden>
               |
             </span>
             <span className="max-w-md leading-relaxed">
-              「목록 갱신」은 DB에서 참가자 목록만 다시 불러옵니다. 플레이NC{" "}
+              「목록·전투력 갱신」은 DB 목록을 불러오고, 본인이 등록돼 있으면 플레이NC 공식 검색 JSON API(
+              <span className="font-mono text-[10px]">/api/search/aion2/search/v2/character</span>)으로{" "}
+              <span className="font-mono text-[10px]">characterId</span>를 찾은 뒤 프로필 HTML에서 전투력·템렙을
+              읽습니다. 초기 HTML에 수치가 없으면 안내와 함께 프로필 URL이 표시되며, 그때는「전투력 반영」으로 수동
+              입력하면 됩니다.{" "}
               <a
                 href={PLAYNC_CHAR_INDEX}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="font-medium text-sky-600 underline-offset-2 hover:underline dark:text-sky-400"
               >
-                캐릭터 정보실
+                플레이NC 캐릭터 정보실
               </a>
-              은 검색·전투력이 브라우저에서만 그려져 서버 자동 조회를 제공하지 않습니다. 전투력은 본인 행에서 수동
-              입력 후「전투력 반영」을 사용하세요. 행의「공식」은 마족 기준 검색 링크입니다(천족은 URL의 race=1로
-              바꿔 보세요).
+              을 열 수 있습니다. 표의「공식」은 마족 기준 웹 검색 링크입니다(천족은 URL의 race=1로 바꿔 보세요).
             </span>
             <span className="tabular-nums text-slate-500 dark:text-slate-400">{rows.length}명</span>
           </div>
