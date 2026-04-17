@@ -148,18 +148,11 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, whoBySlo
       const anchor = shiftAnchorRef.current;
       const cols = columnsRef.current;
       if (anchor && (anchor.dayIdx !== pos.dayIdx || anchor.slotIdx !== pos.slotIdx)) {
-        const keys = keysInRectangle(cols, anchor.dayIdx, pos.dayIdx, anchor.slotIdx, pos.slotIdx);
-        onCellsChange((prev) => {
-          const anchorKey = keyForSlot(anchor.slotIdx, cols[anchor.dayIdx]!.date);
-          /** 기준 칸이 채워져 있으면 직사각형 전부 지우기, 비어 있으면 전부 채우기 */
-          const anchorFilled = prev.has(anchorKey);
-          const next = new Set(prev);
-          for (const k of keys) {
-            if (anchorFilled) next.delete(k);
-            else next.add(k);
-          }
-          return next;
-        });
+        const anchorKey = keyForSlot(anchor.slotIdx, cols[anchor.dayIdx]!.date);
+        /** 드래그와 동일: 클릭 시점 스냅샷 + 기준 칸이 비어 있으면 직사각형 채우기, 채워져 있으면 비우기 */
+        dragSnapshot.current = new Set(selected);
+        dragSelect.current = !selected.has(anchorKey);
+        applyRectFromSnapshot(anchor, pos, dragSelect.current);
       }
       shiftAnchorRef.current = pos;
       return;
@@ -329,15 +322,13 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, whoBySlo
           있으면 연한 파란 배경에 숫자만 보입니다.
         </p>
         <p>
-          <strong>Shift</strong>로 두 칸을 찍으면 직사각형이 한 번에 바뀝니다.{" "}
-          <strong>기준 칸이 채워진 상태</strong>면 그 범위를 지우고, <strong>빈 칸이 기준</strong>이면 그
-          범위를 채웁니다.
-          <br />
-          (기준은 직전에 누른 칸 — Shift 없이 한 번 누른 뒤 Shift로 두 번째 클릭.)
+          <strong>Shift</strong>를 누른 채 다른 칸을 누르면, 직전에 누른 칸(기준)부터 그 칸까지 직사각형이
+          드래그할 때와 <strong>같은 규칙</strong>으로 한 번에 적용됩니다. (기준 칸이 비어 있으면 그 범위를
+          채우고, 채워져 있으면 비웁니다.)
         </p>
         <p>
-          Shift 없이 드래그하면 직사각형으로 선택·해제합니다. 당일 <strong>09:00–24:00</strong>만
-          표시합니다.
+          Shift 없이 드래그하면 기준 칸에서 포인터를 움직이며 같은 방식으로 직사각형을 선택·해제합니다. 당일{" "}
+          <strong>09:00–24:00</strong>만 표시합니다.
         </p>
       </div>
     </div>
