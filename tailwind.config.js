@@ -5,12 +5,13 @@ export default {
   theme: {
     extend: {
       fontFamily: {
+        /* 작은 글꼴에서도 힌팅이 안정적인 한글 UI용 (Google Fonts) */
         sans: [
-          "Pretendard Variable",
-          "Pretendard",
+          '"Noto Sans KR"',
+          "system-ui",
           "-apple-system",
           "BlinkMacSystemFont",
-          "system-ui",
+          "Segoe UI",
           "sans-serif",
         ],
       },
