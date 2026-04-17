@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MatchSummary } from "./components/MatchSummary";
 import { TimeGrid } from "./components/TimeGrid";
 import { buildRaidWeekColumns } from "./lib/slots";
@@ -23,6 +23,16 @@ function readInitialDark(): boolean {
   return window.localStorage.getItem("aion2-theme") === "dark";
 }
 
+const MAX_SLOT_UNDO = 50;
+
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const x of a) {
+    if (!b.has(x)) return false;
+  }
+  return true;
+}
+
 const fmt24 = (d: Date) =>
   d.toLocaleString("ko-KR", {
     year: "numeric",
@@ -38,6 +48,7 @@ export function App() {
   const [nickname, setNickname] = useState("");
   const [server, setServer] = useState("");
   const [mySlots, setMySlots] = useState<Set<string>>(() => new Set());
+  const slotUndoStack = useRef<Set<string>[]>([]);
   const [rows, setRows] = useState<AvailabilityRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -92,6 +103,40 @@ export function App() {
     }
     setRows((data ?? []) as AvailabilityRow[]);
   }, [raidType]);
+
+  const applyMySlots = useCallback((updater: (prev: Set<string>) => Set<string>) => {
+    setMySlots((prev) => {
+      const next = updater(prev);
+      if (setsEqual(prev, next)) return prev;
+      slotUndoStack.current.push(new Set(prev));
+      if (slotUndoStack.current.length > MAX_SLOT_UNDO) slotUndoStack.current.shift();
+      return next;
+    });
+  }, []);
+
+  const undoMySlots = useCallback(() => {
+    const prev = slotUndoStack.current.pop();
+    if (!prev) return;
+    setMySlots(new Set(prev));
+  }, []);
+
+  useEffect(() => {
+    slotUndoStack.current = [];
+  }, [raidType]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z" || e.shiftKey) return;
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+      if (slotUndoStack.current.length === 0) return;
+      e.preventDefault();
+      undoMySlots();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [undoMySlots]);
 
   useEffect(() => {
     if (!supabase) {
@@ -193,6 +238,7 @@ export function App() {
       return;
     }
     await loadRows();
+    slotUndoStack.current = [];
   };
 
   const onClearMine = async () => {
@@ -214,6 +260,7 @@ export function App() {
       setError(de.message);
       return;
     }
+    slotUndoStack.current = [];
     setMySlots(new Set());
     await loadRows();
   };
@@ -382,7 +429,12 @@ export function App() {
       <section className="space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">내 가능 시간</h2>
+            <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
+              내 가능 시간{" "}
+              <span className="font-medium text-slate-500 dark:text-slate-400">
+                ({raidType === "rudra" ? "루드라" : "바고트"})
+              </span>
+            </h2>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               표는 위에서부터 금주(수~화) 7일, 이어서{" "}
               <span className="font-medium text-violet-700 dark:text-violet-300">차주</span> 7일입니다. 시간은
@@ -394,7 +446,7 @@ export function App() {
         <TimeGrid
           columns={columns}
           selected={mySlots}
-          onCellsChange={(updater) => setMySlots((prev) => updater(prev))}
+          onCellsChange={applyMySlots}
           heatCount={heatCount}
           whoBySlot={whoBySlot}
         />

@@ -313,16 +313,33 @@ export function TimeGrid({ columns, selected, onCellsChange, heatCount, whoBySlo
           );
         })}
       </div>
-      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-        겹침이 있는 칸에 <strong>마우스를 올리면</strong> 닉네임·서버가 툴팁으로 표시됩니다.{" "}
-        <strong>숫자</strong>는 그 30분에 가능하다고 적은 인원 수입니다. 내가 선택한 칸은{" "}
-        <strong className="text-blue-900 dark:text-blue-200">파란 배경 + 진한 테두리</strong>, 다른 사람만
-        있으면 연한 파란 배경에 숫자만 보입니다.         <strong>Shift</strong>로 두 칸을 찍으면 직사각형이 한 번에 바뀝니다.{" "}
-        <strong>기준 칸이 채워진 상태</strong>면 그 범위를 지우고, <strong>빈 칸이 기준</strong>이면 그
-        범위를 채웁니다. (기준은 직전에 누른 칸; Shift 없이 한 번 누른 뒤 Shift 두 번째 클릭.) Shift 없이
-        드래그하면 직사각형으로 선택/해제합니다. 당일{" "}
-        <strong>09:00–24:00</strong>만 표시합니다.
-      </p>
+      <div className="mt-3 space-y-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+        <p>
+          <strong>실행 취소:</strong> 표에서 칸을 바꾼 뒤 <strong>Ctrl+Z</strong>(Mac은{" "}
+          <strong>⌘+Z</strong>)로 직전 변경을 되돌릴 수 있습니다. 입력란에 포커스가 있을 때는 동작하지
+          않습니다.
+        </p>
+        <p>
+          겹침이 있는 칸에 <strong>마우스를 올리면</strong> 닉네임·서버가 툴팁으로 표시됩니다.{" "}
+          <strong>숫자</strong>는 그 30분에 가능하다고 적은 인원 수입니다.
+        </p>
+        <p>
+          내가 선택한 칸은{" "}
+          <strong className="text-blue-900 dark:text-blue-200">파란 배경 + 진한 테두리</strong>, 다른 사람만
+          있으면 연한 파란 배경에 숫자만 보입니다.
+        </p>
+        <p>
+          <strong>Shift</strong>로 두 칸을 찍으면 직사각형이 한 번에 바뀝니다.{" "}
+          <strong>기준 칸이 채워진 상태</strong>면 그 범위를 지우고, <strong>빈 칸이 기준</strong>이면 그
+          범위를 채웁니다.
+          <br />
+          (기준은 직전에 누른 칸 — Shift 없이 한 번 누른 뒤 Shift로 두 번째 클릭.)
+        </p>
+        <p>
+          Shift 없이 드래그하면 직사각형으로 선택·해제합니다. 당일 <strong>09:00–24:00</strong>만
+          표시합니다.
+        </p>
+      </div>
     </div>
   );
 }
