@@ -9,7 +9,7 @@ body,
 }
 
 body {
-  @apply bg-slate-950 text-slate-100 antialiased;
+  @apply min-h-full bg-gradient-to-br from-sky-50 via-white to-pink-50 text-slate-800 antialiased;
 }
 
 /* 그리드 셀 드래그 시 텍스트 선택 방지 */
