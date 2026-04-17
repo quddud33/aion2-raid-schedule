@@ -279,17 +279,21 @@ export function TimeGrid({
   const afternoonSlots = SLOTS - morningSlots;
 
   return (
-    <div className="slot-grid max-w-full overflow-x-auto rounded-2xl border border-sky-200/80 bg-white/80 p-5 shadow-sm backdrop-blur-sm dark:border-slate-600 dark:bg-slate-900/70">
+    <div className="slot-grid max-w-full overflow-x-auto overscroll-x-contain rounded-2xl border border-sky-200/80 bg-white/80 p-5 shadow-sm backdrop-blur-sm dark:border-slate-600 dark:bg-slate-900/70">
       {scheduleIntro != null && (
         <div className="mb-3 flex flex-wrap items-end justify-between gap-2 border-b border-sky-100/90 pb-3 dark:border-slate-700/90">
           {scheduleIntro}
+          <p className="w-full text-[11px] leading-snug text-slate-500 dark:text-slate-400 md:hidden">
+            좁은 화면에서는 표를 <strong className="text-slate-600 dark:text-slate-300">좌우로 스크롤</strong>
+            한 뒤 칸을 탭·드래그하세요. (각 30분 칸은 최소 터치 크기로 넓혀 두었습니다.)
+          </p>
         </div>
       )}
       <div
         className={[
-          "inline-grid min-w-0 gap-1",
-          "[grid-template-columns:minmax(5.25rem,6.5rem)_repeat(30,minmax(0.45rem,1fr))]",
-          "sm:[grid-template-columns:minmax(6.75rem,7.5rem)_repeat(30,minmax(0.55rem,1fr))]",
+          "inline-grid w-max gap-1",
+          /* 모바일·태블릿 세로: 슬롯을 압축하지 않고 고정 폭 → 가로 스크롤로 선택 */
+          "max-md:[grid-template-columns:minmax(5.5rem,6.75rem)_repeat(30,minmax(2.75rem,2.75rem))]",
           "md:[grid-template-columns:9.25rem_repeat(30,minmax(1.15rem,1fr))]",
         ].join(" ")}
       >
@@ -315,9 +319,9 @@ export function TimeGrid({
         {Array.from({ length: SLOTS }, (_, slot) => (
           <div
             key={`h-${slot}`}
-            className="flex h-11 min-w-0 flex-col items-center justify-end pb-0.5 text-center"
+            className="flex h-11 w-full min-w-[2.75rem] flex-col items-center justify-end px-0.5 pb-0.5 text-center md:min-w-0"
           >
-            <span className="whitespace-nowrap text-[9px] font-semibold tabular-nums leading-none text-slate-600 dark:text-slate-400">
+            <span className="whitespace-nowrap text-[10px] font-semibold tabular-nums leading-none text-slate-600 dark:text-slate-400 md:text-[9px]">
               {slotLabel(slot)}
             </span>
           </div>
@@ -378,7 +382,7 @@ export function TimeGrid({
                     data-day-index={dayIdx}
                     data-slot-index={slot}
                     className={[
-                      "relative h-10 min-w-0 touch-none rounded-md transition-colors",
+                      "relative h-11 w-full min-w-[2.75rem] touch-none rounded-md transition-colors md:h-10 md:min-w-0",
                       on
                         ? "z-[1] border-[3px] border-blue-800 bg-blue-500/40 shadow-sm dark:border-blue-300 dark:bg-blue-500/45"
                         : showCount
@@ -504,6 +508,10 @@ export function TimeGrid({
         <p>
           Shift 없이 드래그하면 기준 칸에서 포인터를 움직이며 같은 방식으로 직사각형을 선택·해제합니다. 당일{" "}
           <strong>09:00–24:00</strong>만 표시합니다.
+        </p>
+        <p className="md:hidden">
+          <strong>모바일:</strong> 시간 칸은 한 줄에 모두 두지 않고{" "}
+          <strong>가로로 스크롤</strong>하면서 고른 뒤 탭하거나 드래그하면 됩니다.
         </p>
       </div>
     </div>
