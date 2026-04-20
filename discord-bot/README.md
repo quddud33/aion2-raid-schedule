@@ -30,7 +30,9 @@
 4. 같은 Bot 화면에서 **Reset Token** → 토큰이 나오면 **한 번만** 복사해 둡니다. (다시는 전체가 안 보이므로 잃어버리면 Reset)  
    - 이 값이 나중에 `.env`의 `DISCORD_BOT_TOKEN`입니다.  
 5. (선택) **Public Bot** 은 소규모 길드면 꺼도 됩니다.  
-6. **Privileged Gateway Intents** — 이 예제는 채널에만 글을 쓰므로 **Presence / Server Members Intent 는 꺼도 됩니다.** (켜도 동작에는 큰 문제 없음)
+6. **Privileged Gateway Intents** (같은 **Bot** 화면 아래쪽, 스크롤) — 일반적으로 **Presence / Server Members** 는 꺼도 됩니다.  
+   **채팅으로 `알람 …` 문장을 읽는 기능**을 쓸 때만(`.env`에 `REMIND_CHAT_ENABLED=1`) 세 번째 항목 **MESSAGE CONTENT INTENT**(메시지 본문 읽기)를 켭니다. **슬래시만 쓰면 끄어도 됩니다.**  
+   ※ 이 스위치는 **OAuth2 → URL Generator** 의 “봇 권한” 체크박스와 **다른 곳**입니다.
 
 ---
 
@@ -254,7 +256,7 @@ Supabase에 테이블 `discord_reminder_channel_config` 가 있어야 합니다(
 
 | 증상 | 확인할 것 |
 |------|------------|
-| `Used disallowed intents` | Portal에서 불필요한 Privileged Intent 를 켰다면 끄거나, 봇 코드와 맞춥니다. 이 예제는 `Guilds` 만 사용합니다. |
+| `Used disallowed intents` | `.env`에 `REMIND_CHAT_ENABLED=1` 인데 Portal **Bot** 탭의 **MESSAGE CONTENT** Intent 를 안 켰거나, 반대로 코드는 끄고 Intent 만 켠 경우 등 **코드와 Intent 불일치**. 채팅 알람을 안 쓰면 `REMIND_CHAT_ENABLED` 비우기(기본). |
 | 채널에 메시지가 안 감 | 봇이 그 **서버·채널**에 초대됐는지, `DISCORD_CHANNEL_ID`가 텍스트 채널인지 확인합니다. |
 | 멘션이 안 됨 | 해당 유저가 `discord_id` 없이 저장됐을 수 있습니다. 웹에서 저장 다시. |
 | 시간이 9시간 어긋남 | `.env`에 `REMIND_TZ=Asia/Seoul` 이 있는지, 봇을 돌리는 PC/OS 타임존을 확인합니다. |

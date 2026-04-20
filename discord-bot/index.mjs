@@ -12,7 +12,7 @@
  * 겹침: `/raid_overlap` (레이드별 웹 전원, 멘션 없음) · 주사위: `/dice` (1~100, 채널에 멘션)
  * 슈상보: `/sugo_ping` — 짝수 시 정각(06~08시 제외) 등록 채널에서 멘션
  * 파티: `/party_recruit` — 최대 8인, 버튼으로 출발·해체·가입·탈퇴
- * 알람: `/remind` · 채팅 파싱은 `REMIND_CHAT_ENABLED=1`+Portal Message Content 시 `알람 …`/`@봇 …`
+ * 알람: `/remind` · 채팅 파싱은 `REMIND_CHAT_ENABLED=1`+Bot 탭 Intent 시 `알람 …`/`@봇 …`
  *
  * 부하 완화: 미래 확정 일정 없으면 레이드 틱 조기 종료 / 가능시간 DB 1회만 조회 /
  * 전송 기록 파일 주기적 정리·실제 알림 보낼 때만 state 저장 (자세한 건 로그 `[최적화]`)
@@ -75,8 +75,9 @@ function envFlagTruthy(name) {
 
 /**
  * 채팅 본문 알람에 `GuildMessages` + `MessageContent` 가 필요함.
- * Portal에서 Message Content Intent 를 켜지 않으면 `Used disallowed intents` 로 종료되므로 기본은 끔.
- * 켜려면: `REMIND_CHAT_ENABLED=1` + Developer Portal → Bot → Message Content Intent ON
+ * `REMIND_CHAT_ENABLED=1` 인데 Portal **Bot** 탭의 **Privileged Gateway Intents** 에서
+ * 메시지 본문 읽기(Intent)를 켜지 않으면 `Used disallowed intents` 로 종료되므로 기본은 끔.
+ * (초대 URL의 ‘봇 권한’ 체크박스와는 다른 곳입니다.)
  */
 const REMIND_CHAT_ENABLED = envFlagTruthy("REMIND_CHAT_ENABLED");
 
@@ -1931,11 +1932,11 @@ async function main() {
   );
   if (REMIND_CHAT_ENABLED) {
     console.log(
-      `[알람 채팅] 켜짐 · 접두 "${REMIND_MSG_PREFIX || "(없음·봇멘션만)"}" · Portal **Message Content Intent** 필수`,
+      `[알람 채팅] 켜짐 · 접두 "${REMIND_MSG_PREFIX || "(없음·봇멘션만)"}" · Portal 앱→Bot→Privileged Gateway Intents→MESSAGE CONTENT(메시지 본문) ON 필수`,
     );
   } else {
     console.log(
-      `[알람 채팅] 끔 — 채팅 파싱·메시지 인텐트 미사용. 켜려면 REMIND_CHAT_ENABLED=1 + Portal Message Content Intent (/remind 슬래시는 그대로 동작)`,
+      `[알람 채팅] 끔 — 채팅 파싱 안 함(Bot 탭 Intent 불필요). 슬래시 /remind·레이드 알림은 동일`,
     );
   }
 
