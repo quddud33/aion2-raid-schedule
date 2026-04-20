@@ -37,6 +37,18 @@ function slotLabel(slot: number): string {
 
 type CellPos = { dayIdx: number; slotIdx: number };
 
+/** 드래그·Shift 직사각형 중 날짜/시간 축 하이라이트용 */
+type BrushRect = { dayMin: number; dayMax: number; slotMin: number; slotMax: number };
+
+function brushFromCells(a: CellPos, b: CellPos): BrushRect {
+  return {
+    dayMin: Math.min(a.dayIdx, b.dayIdx),
+    dayMax: Math.max(a.dayIdx, b.dayIdx),
+    slotMin: Math.min(a.slotIdx, b.slotIdx),
+    slotMax: Math.max(a.slotIdx, b.slotIdx),
+  };
+}
+
 function keysInRectangle(
   columns: DayColumn[],
   d0: number,
@@ -170,6 +182,7 @@ export function TimeGrid({
   const shiftRectOriginRef = useRef<CellPos | null>(null);
 
   const [overlapPopover, setOverlapPopover] = useState<OverlapPopoverState | null>(null);
+  const [brushRect, setBrushRect] = useState<BrushRect | null>(null);
   const leaveOverlapTimerRef = useRef<number | null>(null);
 
   const gridScrollRef = useRef<HTMLDivElement>(null);
@@ -313,6 +326,7 @@ export function TimeGrid({
     dragging.current = false;
     dragAnchor.current = null;
     dragSnapshot.current = null;
+    setBrushRect(null);
     onDragUndoSessionEnd?.();
   }, [onDragUndoSessionEnd]);
 
@@ -336,6 +350,7 @@ export function TimeGrid({
       const cur = resolveCellFromPoint(e.clientX, e.clientY);
       if (!cur) return;
       applyRectFromSnapshot(dragAnchor.current, cur, dragSelect.current);
+      setBrushRect(brushFromCells(dragAnchor.current, cur));
     };
     const onPointerUp = () => endDrag();
     const onLostCapture = () => endDrag();
@@ -357,6 +372,7 @@ export function TimeGrid({
     e.preventDefault();
     cancelOverlapClose();
     setOverlapPopover(null);
+    setBrushRect(null);
     const pos: CellPos = { dayIdx, slotIdx };
 
     if (e.shiftKey) {
@@ -379,6 +395,7 @@ export function TimeGrid({
           dragSnapshot.current = new Set(selected);
           dragSelect.current = selectRect;
           applyRectFromSnapshot(origin, pos, selectRect);
+          setBrushRect(brushFromCells(origin, pos));
         }
       }
       shiftAnchorRef.current = pos;
@@ -400,6 +417,7 @@ export function TimeGrid({
     dragging.current = true;
     dragSelect.current = !selected.has(key);
     applyRectFromSnapshot(dragAnchor.current, pos, dragSelect.current);
+    setBrushRect(brushFromCells(pos, pos));
   };
 
   const toggleDayAll = (e: React.MouseEvent, dayIdx: number) => {
@@ -417,6 +435,18 @@ export function TimeGrid({
 
   const morningSlots = 6;
   const afternoonSlots = SLOTS - morningSlots;
+
+  const inBrushDay = (d: number) => brushRect != null && d >= brushRect.dayMin && d <= brushRect.dayMax;
+  const inBrushSlot = (s: number) => brushRect != null && s >= brushRect.slotMin && s <= brushRect.slotMax;
+  const brushHitsMorning =
+    brushRect != null && brushRect.slotMin < morningSlots && brushRect.slotMax >= 0;
+  const brushHitsAfternoon =
+    brushRect != null && brushRect.slotMax >= morningSlots && brushRect.slotMin <= SLOTS - 1;
+
+  const slotHeaderGlow =
+    "font-semibold text-sky-700 drop-shadow-[0_0_10px_rgba(56,189,248,0.65)] dark:text-sky-100 dark:drop-shadow-[0_0_14px_rgba(125,211,252,0.5)]";
+  const slotHeaderIdle =
+    "font-semibold text-slate-600 dark:text-slate-400 md:text-[9px]";
 
   return (
     <div className="slot-grid max-w-full rounded-2xl border border-sky-200/80 bg-white/80 p-5 shadow-sm backdrop-blur-sm dark:border-slate-600 dark:bg-slate-900/70">
@@ -581,7 +611,16 @@ export function TimeGrid({
               <div className="rounded-xl border border-violet-200/70 bg-white/90 p-3 shadow-sm dark:border-violet-900/40 dark:bg-slate-900/80">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-violet-100/80 pb-3 dark:border-violet-900/40">
                   <div>
-                    <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">{col.label}</p>
+                    <p
+                      className={[
+                        "text-xs font-semibold transition-[color,filter] duration-150",
+                        inBrushDay(dIdx)
+                          ? "text-sky-800 drop-shadow-[0_0_10px_rgba(14,165,233,0.45)] dark:text-sky-100 dark:drop-shadow-[0_0_12px_rgba(125,211,252,0.4)]"
+                          : "text-slate-700 dark:text-slate-200",
+                      ].join(" ")}
+                    >
+                      {col.label}
+                    </p>
                     <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">30분 단위 · 드래그로 연속 선택</p>
                   </div>
                   <button
@@ -635,7 +674,14 @@ export function TimeGrid({
                         }}
                         onPointerLeave={scheduleOverlapClose}
                       >
-                        <span className="text-sm font-bold tabular-nums text-slate-800 dark:text-slate-100">
+                        <span
+                          className={[
+                            "text-sm font-bold tabular-nums transition-[color,filter] duration-150",
+                            inBrushSlot(slot) && inBrushDay(dIdx)
+                              ? "text-sky-700 drop-shadow-[0_0_10px_rgba(56,189,248,0.55)] dark:text-sky-100 dark:drop-shadow-[0_0_12px_rgba(125,211,252,0.45)]"
+                              : "text-slate-800 dark:text-slate-100",
+                          ].join(" ")}
+                        >
                           {slotLabel(slot)}
                         </span>
                         <span
@@ -687,28 +733,81 @@ export function TimeGrid({
               "md:[grid-template-columns:9.25rem_repeat(30,minmax(1.15rem,1fr))]",
             ].join(" ")}
           >
-        <div className={["text-[9px] font-medium text-slate-500 dark:text-slate-400", scrollStickyCorner].join(" ")}>
+        <div
+          className={[
+            "text-[9px] font-medium transition-[color,filter] duration-150",
+            scrollStickyCorner,
+            brushRect != null
+              ? "text-sky-800 drop-shadow-[0_0_6px_rgba(56,189,248,0.4)] dark:text-sky-100 dark:drop-shadow-[0_0_8px_rgba(125,211,252,0.35)]"
+              : "text-slate-500 dark:text-slate-400",
+          ].join(" ")}
+        >
           시간 구간
         </div>
         <div
-          className="flex flex-col items-center justify-center rounded-md bg-sky-100/90 px-1 py-1 text-center dark:bg-slate-800/80"
+          className={[
+            "flex flex-col items-center justify-center rounded-md px-1 py-1 text-center transition-[background-color,box-shadow,color] duration-150",
+            brushHitsMorning
+              ? "bg-sky-200/95 ring-2 ring-sky-400/70 dark:bg-sky-800/70 dark:ring-sky-400/45"
+              : "bg-sky-100/90 dark:bg-slate-800/80",
+          ].join(" ")}
           style={{ gridColumn: `2 / span ${morningSlots}` }}
         >
-          <span className="text-[10px] font-bold text-blue-800 dark:text-blue-200">09:00–12:00</span>
-          <span className="text-[8px] leading-tight text-slate-600 dark:text-slate-400">24시 · 전반</span>
+          <span
+            className={[
+              "text-[10px] font-bold transition-[color,filter] duration-150",
+              brushHitsMorning
+                ? "text-blue-900 drop-shadow-[0_0_8px_rgba(37,99,235,0.45)] dark:text-sky-100 dark:drop-shadow-[0_0_12px_rgba(125,211,252,0.45)]"
+                : "text-blue-800 dark:text-blue-200",
+            ].join(" ")}
+          >
+            09:00–12:00
+          </span>
+          <span
+            className={[
+              "text-[8px] leading-tight transition-colors duration-150",
+              brushHitsMorning ? "text-slate-800 dark:text-sky-200" : "text-slate-600 dark:text-slate-400",
+            ].join(" ")}
+          >
+            24시 · 전반
+          </span>
         </div>
         <div
-          className="flex flex-col items-center justify-center rounded-md bg-blue-50/90 px-1 py-1 text-center dark:bg-blue-950/30"
+          className={[
+            "flex flex-col items-center justify-center rounded-md px-1 py-1 text-center transition-[background-color,box-shadow,color] duration-150",
+            brushHitsAfternoon
+              ? "bg-indigo-100/95 ring-2 ring-indigo-400/60 dark:bg-indigo-950/50 dark:ring-indigo-400/40"
+              : "bg-blue-50/90 dark:bg-blue-950/30",
+          ].join(" ")}
           style={{ gridColumn: `${2 + morningSlots} / span ${afternoonSlots}` }}
         >
-          <span className="text-[10px] font-bold text-blue-900 dark:text-blue-100">12:00–24:00</span>
-          <span className="text-[8px] leading-tight text-blue-800/80 dark:text-blue-300/90">24시 · 후반</span>
+          <span
+            className={[
+              "text-[10px] font-bold transition-[color,filter] duration-150",
+              brushHitsAfternoon
+                ? "text-indigo-950 drop-shadow-[0_0_8px_rgba(79,70,229,0.4)] dark:text-indigo-100 dark:drop-shadow-[0_0_12px_rgba(165,180,252,0.45)]"
+                : "text-blue-900 dark:text-blue-100",
+            ].join(" ")}
+          >
+            12:00–24:00
+          </span>
+          <span
+            className={[
+              "text-[8px] leading-tight transition-colors duration-150",
+              brushHitsAfternoon ? "text-indigo-900 dark:text-indigo-200" : "text-blue-800/80 dark:text-blue-300/90",
+            ].join(" ")}
+          >
+            24시 · 후반
+          </span>
         </div>
 
         <div
           className={[
-            "flex items-end pb-1 text-[10px] font-medium text-sky-700 dark:text-sky-300",
+            "flex items-end pb-1 text-[10px] font-medium transition-[color,filter] duration-150",
             scrollStickyTimeAxis,
+            brushRect != null
+              ? "text-sky-900 drop-shadow-[0_0_8px_rgba(14,165,233,0.45)] dark:text-sky-50 dark:drop-shadow-[0_0_10px_rgba(125,211,252,0.4)]"
+              : "text-sky-700 dark:text-sky-300",
           ].join(" ")}
         >
           날짜 / 전체
@@ -716,9 +815,17 @@ export function TimeGrid({
         {Array.from({ length: SLOTS }, (_, slot) => (
           <div
             key={`h-${slot}`}
-            className="flex h-11 w-full min-w-[2.75rem] flex-col items-center justify-end px-0.5 pb-0.5 text-center md:min-w-0"
+            className={[
+              "flex h-11 w-full min-w-[2.75rem] flex-col items-center justify-end px-0.5 pb-0.5 text-center transition-[background-color] duration-150 md:min-w-0",
+              inBrushSlot(slot) ? "rounded-md bg-sky-100/70 dark:bg-sky-900/40" : "",
+            ].join(" ")}
           >
-            <span className="whitespace-nowrap text-[10px] font-semibold tabular-nums leading-none text-slate-600 dark:text-slate-400 md:text-[9px]">
+            <span
+              className={[
+                "whitespace-nowrap text-[10px] tabular-nums leading-none transition-[color,filter] duration-150",
+                inBrushSlot(slot) ? slotHeaderGlow : slotHeaderIdle,
+              ].join(" ")}
+            >
               {slotLabel(slot)}
             </span>
           </div>
@@ -734,16 +841,31 @@ export function TimeGrid({
                   dayRowLabelRefs.current[dayIdx] = el;
                 }}
                 className={[
-                  "flex min-h-[2.25rem] items-stretch gap-1 border-r py-0.5 pr-1 text-xs font-semibold leading-tight",
+                  "flex min-h-[2.25rem] items-stretch gap-1 border-r py-0.5 pr-1 text-xs font-semibold leading-tight transition-[color,background-color,box-shadow] duration-150",
                   scrollStickyDayAxis,
-                  col.raidWeek === "next"
-                    ? "border-violet-200 text-violet-800 dark:border-violet-800/60 dark:text-violet-200"
-                    : "border-sky-100 text-slate-800 dark:border-slate-700 dark:text-slate-100",
+                  inBrushDay(dayIdx)
+                    ? col.raidWeek === "next"
+                      ? "rounded-md bg-violet-200/85 ring-1 ring-violet-400/75 text-violet-950 drop-shadow-[0_0_10px_rgba(139,92,246,0.45)] dark:bg-violet-950/55 dark:text-violet-50 dark:ring-violet-400/45 dark:drop-shadow-[0_0_12px_rgba(196,181,253,0.4)]"
+                      : "rounded-md bg-sky-100/95 ring-1 ring-sky-400/70 text-sky-950 drop-shadow-[0_0_10px_rgba(14,165,233,0.4)] dark:bg-sky-900/50 dark:text-sky-50 dark:ring-sky-400/45 dark:drop-shadow-[0_0_12px_rgba(125,211,252,0.38)]"
+                    : col.raidWeek === "next"
+                      ? "border-violet-200 text-violet-800 dark:border-violet-800/60 dark:text-violet-200"
+                      : "border-sky-100 text-slate-800 dark:border-slate-700 dark:text-slate-100",
                 ].join(" ")}
                 title={col.label}
               >
                 <div className="flex min-w-0 flex-1 flex-col justify-center">
-                  <span className="truncate">{col.short}</span>
+                  <span
+                    className={[
+                      "truncate transition-[color,filter] duration-150",
+                      inBrushDay(dayIdx)
+                        ? col.raidWeek === "next"
+                          ? "font-bold text-violet-950 dark:text-violet-50"
+                          : "font-bold text-sky-950 dark:text-sky-50"
+                        : "",
+                    ].join(" ")}
+                  >
+                    {col.short}
+                  </span>
                   {col.raidWeek === "next" && (
                     <span className="mt-0.5 w-fit rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-800 dark:bg-violet-900/60 dark:text-violet-200">
                       차주
