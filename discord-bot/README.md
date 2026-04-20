@@ -144,6 +144,31 @@ Supabase에 테이블 `discord_reminder_channel_config` 가 있어야 합니다(
 
 ---
 
+## 5B. Oracle VM **안에서만** 봇 코드 갱신 (PC `scp` 없이)
+
+무료 VM이 자주 멈추거나, **로컬에서 `tar|ssh`가 불안정**하면 서버에 SSH로 들어가서만 갱신하는 편이 낫습니다.
+
+1. (최초 1회) GitHub에서 스크립트만 받기:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/quddud33/aion2-raid-schedule/main/discord-bot/vm-pull.sh -o ~/vm-pull.sh
+   chmod +x ~/vm-pull.sh
+   ```
+
+2. 코드 올릴 때마다(GitHub `main`에 푸시한 뒤):
+
+   ```bash
+   ~/vm-pull.sh
+   ```
+
+   - `~/aion2-raid-schedule/discord-bot/.env` 는 **덮어쓰지 않고** 유지합니다.  
+   - `raid-discord-bot.service` 가 있으면 `npm install` 뒤 **자동 재시작**합니다.  
+   - 다른 브랜치·포크: `BRANCH=master GITHUB_REPO=계정/저장소 ~/vm-pull.sh`
+
+저장소에 포함된 스크립트: [`discord-bot/vm-pull.sh`](vm-pull.sh)
+
+---
+
 ## 5A. Oracle VM을 쓸 때 — **어디서** 무엇을 하나요?
 
 지금처럼 OCI **홈**에서 **Compute → Create a VM instance** 로 들어가 마법사를 진행 중이면, 아래만 순서대로 맞추면 됩니다. (리전은 스크린샷 기준 **South Korea North (Chuncheon)** 도 OK입니다.)
