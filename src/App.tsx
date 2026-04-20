@@ -406,6 +406,7 @@ export function App() {
   const signInWithDiscord = useCallback(async () => {
     if (!supabase) return;
     setError(null);
+    /** 전체 `location.href`(쿼리·해시 포함)를 쓰면 OAuth 요청 줄이 커져 Discord/프록시에서 4KB 제한을 넘을 수 있음 */
     const redirectTo = `${window.location.origin}${import.meta.env.BASE_URL.replace(/\/?$/, "/")}`.replace(
       /([^:]\/)\/+/g,
       "$1",
@@ -413,7 +414,7 @@ export function App() {
     const { error: oerr } = await supabase.auth.signInWithOAuth({
       provider: "discord",
       options: {
-        redirectTo: window.location.href || redirectTo,
+        redirectTo,
         scopes: "identify email",
       },
     });
