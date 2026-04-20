@@ -8,7 +8,7 @@
  * 한 번만 점검: npm run check
  * 채널에 테스트 글: `/raid_notify test`(실행자 멘션) 또는 npm run test-notify
  * 명령 안내: `/raid_notify help`
- * 내 가능 시간: `/raid_my_schedule` (웹에서 Discord 연동 후 저장한 슬롯)
+ * 내 가능 시간: `/raid_my_schedule` (금주·차주 14일만, 날짜별·연속 구간 묶음)
  */
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
@@ -138,20 +138,96 @@ function formatMinuteLabel(minutes) {
   return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
-/** 웹 TimeGrid와 같은 느낌: `4/20 (일) 18:30–19:00` */
-function formatSlotKeyKo(key) {
-  const p = parseSlotKeyStr(key);
-  if (!p || !Number.isFinite(p.minutes)) return String(key);
-  const [y, mo, d] = p.day.split("-").map(Number);
-  const dt = new Date(y, mo - 1, d);
-  const w = ["일", "월", "화", "수", "목", "금", "토"][dt.getDay()];
-  const start = formatMinuteLabel(p.minutes);
-  const end = formatMinuteLabel(p.minutes + 30);
-  return `${mo}/${d} (${w}) ${start}–${end}`;
+/** 웹 `slots.ts` 와 동일: 이번 레이드 주 시작 = 가장 최근 수요일 00:00(로컬) */
+function startOfRaidWeekWednesday(ref) {
+  const d = new Date(ref);
+  d.setHours(0, 0, 0, 0);
+  const dow = d.getDay();
+  const offset = (dow - 3 + 7) % 7;
+  d.setDate(d.getDate() - offset);
+  return d;
 }
 
-function sortSlotKeys(keys) {
-  return [...keys].sort((a, b) => String(a).localeCompare(String(b)));
+function dateKeyLocalFromDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** 금주·차주 각 7일, 총 14일 메타(표시 제목 + date 키) */
+function buildRaidFortnightDayMetas(ref) {
+  const start = startOfRaidWeekWednesday(ref);
+  const out = [];
+  for (let i = 0; i < 14; i++) {
+    const date = new Date(start);
+    date.setDate(start.getDate() + i);
+    const w = ["일", "월", "화", "수", "목", "금", "토"][date.getDay()];
+    out.push({
+      dateKey: dateKeyLocalFromDate(date),
+      lineTitle: `${date.getMonth() + 1}/${date.getDate()} (${w})`,
+    });
+  }
+  return out;
+}
+
+function allowedDateKeySetFortnight(ref) {
+  return new Set(buildRaidFortnightDayMetas(ref).map((x) => x.dateKey));
+}
+
+function filterSlotKeysToFortnight(slotKeys, ref) {
+  const allowed = allowedDateKeySetFortnight(ref);
+  return slotKeys.filter((k) => {
+    const p = parseSlotKeyStr(k);
+    return p && allowed.has(p.day);
+  });
+}
+
+/** 같은 날짜의 슬롯 시작 분(정렬·중복 제거 후)을 연속 30분 구간으로 병합 → [startMin, endMin) */
+function mergeAdjacentHalfHourRanges(sortedUniqueMinutes) {
+  if (sortedUniqueMinutes.length === 0) return [];
+  const runs = [];
+  let cs = sortedUniqueMinutes[0];
+  let ce = cs + 30;
+  for (let i = 1; i < sortedUniqueMinutes.length; i++) {
+    const m = sortedUniqueMinutes[i];
+    if (m === ce) {
+      ce = m + 30;
+    } else {
+      runs.push([cs, ce]);
+      cs = m;
+      ce = m + 30;
+    }
+  }
+  runs.push([cs, ce]);
+  return runs;
+}
+
+/** 금주·차주만, 날짜별 헤더 + 연속 구간 줄 */
+function formatFortnightSlotsGrouped(slotKeys, ref) {
+  const filtered = filterSlotKeysToFortnight(slotKeys, ref);
+  if (filtered.length === 0) return { lines: [], hadKeysOutside: slotKeys.length > 0 };
+
+  const byDay = new Map();
+  for (const sk of filtered) {
+    const p = parseSlotKeyStr(sk);
+    if (!p || !Number.isFinite(p.minutes)) continue;
+    if (!byDay.has(p.day)) byDay.set(p.day, []);
+    byDay.get(p.day).push(p.minutes);
+  }
+
+  const lines = [];
+  for (const { dateKey, lineTitle } of buildRaidFortnightDayMetas(ref)) {
+    if (!byDay.has(dateKey)) continue;
+    const mins = [...new Set(byDay.get(dateKey))].sort((a, b) => a - b);
+    const ranges = mergeAdjacentHalfHourRanges(mins);
+    lines.push(`**${lineTitle}**`);
+    for (const [a, b] of ranges) {
+      lines.push(`· ${formatMinuteLabel(a)}–${formatMinuteLabel(b)}`);
+    }
+  }
+
+  return { lines, hadKeysOutside: false };
 }
 
 /** Discord 본문 상한(여유) 기준으로 줄 단위 분할 */
@@ -232,7 +308,7 @@ const SLASH_HELP_KO = [
   "",
   "**자동 알림:** 웹에서 확정된 일정 기준, 당일 지정 시각·출발 30분 전에 위 채널로 전송 (봇 프로세스가 켜져 있을 때).",
   "",
-  "**내 가능 시간:** `/raid_my_schedule` — 웹에서 **가능 시간 저장**한 슬롯 목록 (본인만 보임, 에페멀).",
+  "**내 가능 시간:** `/raid_my_schedule` — 금주·차주(레이드 주 14일)만, 날짜별·연속 구간 묶어 표시 (본인만 보임).",
 ].join("\n");
 
 function buildSlashCommands() {
@@ -350,8 +426,12 @@ async function handleMyScheduleInteraction(supabase, interaction) {
     return;
   }
 
+  const ref = new Date();
   const rows = [...data].sort((a, b) => String(a.raid_type).localeCompare(String(b.raid_type)));
-  const lines = ["**내 등록 가능 시간** (웹 앱과 동일)", ""];
+  const lines = [
+    "**내 등록 가능 시간** · 금주·차주(수~화 기준 14일)만, 연속 30분은 한 구간으로 묶음",
+    "",
+  ];
   for (const row of rows) {
     const label = RAID_TYPE_LABEL_KO[row.raid_type] ?? row.raid_type;
     const slots = Array.isArray(row.slots) ? row.slots : [];
@@ -359,8 +439,14 @@ async function handleMyScheduleInteraction(supabase, interaction) {
     if (slots.length === 0) {
       lines.push("· (슬롯 없음)");
     } else {
-      for (const sk of sortSlotKeys(slots)) {
-        lines.push(`· ${formatSlotKeyKo(sk)}`);
+      const { lines: slotLines, hadKeysOutside } = formatFortnightSlotsGrouped(slots, ref);
+      if (slotLines.length === 0) {
+        lines.push(
+          "· 금주·차주 안에 해당하는 슬롯이 없습니다." +
+            (hadKeysOutside ? " (다른 주에만 저장된 슬롯이 있을 수 있습니다.)" : ""),
+        );
+      } else {
+        for (const L of slotLines) lines.push(L);
       }
     }
     const updated = row.updated_at ? formatKo(new Date(row.updated_at)) : "";
