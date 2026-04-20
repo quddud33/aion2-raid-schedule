@@ -236,6 +236,8 @@ node -v
 npm -v
 ```
 
+**정상일 때:** ②를 치면 곧바로(또는 잠시 뒤) 터미널에 **메타데이터 확인·패키지 목록·다운로드 진행률·`Installing/Complete`** 같은 줄들이 **계속 올라옵니다.** 아무 글자도 없이 **몇 분째 멈춘 것처럼** 보이면, Micro VM(1GB)에서 **메모리 부족·다른 `dnf` 잠금·느린 미러**일 수 있습니다. 다른 SSH 창에서 `ps aux | grep dnf` 로 잠금 여부를 보거나, 더 자세한 로그는 `sudo dnf install -y nodejs -v` 로 시도해 볼 수 있습니다.
+
 - ②에서 **오류·충돌 메시지**가 나오면 그대로 복사해 두었다가 확인합니다. (`--allowerasing` 이 필요한 경우도 드묽니다: `sudo dnf install -y nodejs --allowerasing`)  
 - **`dnf` 가 오래 멈춘 것처럼 보이면** (Micro 1GB에서 흔함): SSH를 **새로 연 뒤** `sudo pkill dnf`(필요 시)·`sudo rm -f /var/run/dnf.pid` 등으로 정리하고 **②만** 다시 실행해 보거나, 바로 아래 **§6-1 tarball** 절차를 씁니다.
 

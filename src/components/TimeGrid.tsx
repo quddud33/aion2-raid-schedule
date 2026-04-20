@@ -103,13 +103,13 @@ function useNarrowLayout() {
   return narrow;
 }
 
-/** 가로 스크롤 시 첫 열(날짜·축 라벨) 고정 */
+/** 가로 스크롤 시 첫 열(날짜·축 라벨) 고정 — 옆으로 번지는 box-shadow는 PC에서 얼룩처럼 보일 수 있어 테두리만 사용 */
 const scrollStickyCorner =
-  "sticky left-0 z-20 bg-white/98 backdrop-blur-sm shadow-[4px_0_14px_-6px_rgba(15,23,42,0.22)] dark:bg-slate-900/98 dark:shadow-[4px_0_16px_-6px_rgba(0,0,0,0.55)]";
+  "sticky left-0 z-20 border-r border-slate-200/95 bg-white/98 dark:border-slate-600 dark:bg-slate-900/98";
 const scrollStickyTimeAxis =
-  "sticky left-0 z-[15] bg-white/98 backdrop-blur-sm shadow-[3px_0_12px_-5px_rgba(15,23,42,0.2)] dark:bg-slate-900/98 dark:shadow-[3px_0_14px_-5px_rgba(0,0,0,0.45)]";
+  "sticky left-0 z-[15] border-r border-slate-200/95 bg-white/98 dark:border-slate-600 dark:bg-slate-900/98";
 const scrollStickyDayAxis =
-  "sticky left-0 z-10 bg-white/98 backdrop-blur-sm shadow-[3px_0_12px_-5px_rgba(15,23,42,0.18)] dark:bg-slate-900/98 dark:shadow-[3px_0_14px_-5px_rgba(0,0,0,0.42)]";
+  "sticky left-0 z-10 border-r border-slate-200/95 bg-white/98 dark:border-slate-600 dark:bg-slate-900/98";
 
 type OverlapPopoverState = {
   slotKey: string;

@@ -35,9 +35,9 @@ const logoUrl = `${import.meta.env.BASE_URL}logo.png`;
 
 /** 가능 시간 저장 — 눈에 띄게(여러 위치에서 공통) */
 const BTN_SAVE_HERO =
-  "inline-flex min-h-[52px] w-full min-w-0 flex-1 items-center justify-center rounded-2xl bg-sky-500 px-5 text-base font-bold text-white shadow-lg shadow-sky-600/30 ring-2 ring-sky-400/50 transition hover:bg-sky-600 hover:shadow-sky-600/40 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45 dark:bg-sky-600 dark:ring-sky-500/40 dark:shadow-sky-900/40 dark:hover:bg-sky-500 sm:text-[15px]";
+  "inline-flex min-h-[52px] w-full min-w-0 flex-1 items-center justify-center rounded-2xl bg-sky-500 px-5 text-base font-bold text-white shadow-sm transition hover:bg-sky-600 hover:shadow-md active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45 dark:bg-sky-600 dark:hover:bg-sky-500 sm:text-[15px]";
 const BTN_SAVE_DOCK =
-  "inline-flex min-h-[56px] w-full items-center justify-center rounded-2xl bg-sky-500 px-5 text-lg font-bold text-white shadow-lg shadow-sky-700/35 ring-2 ring-white/30 transition hover:bg-sky-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45 dark:bg-sky-600 dark:ring-sky-300/20 dark:hover:bg-sky-500";
+  "inline-flex min-h-[56px] w-full items-center justify-center rounded-2xl bg-sky-500 px-5 text-lg font-bold text-white shadow-md transition hover:bg-sky-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45 dark:bg-sky-600 dark:hover:bg-sky-500";
 const BTN_CLEAR_OUTLINE =
   "inline-flex min-h-[48px] w-full shrink-0 items-center justify-center rounded-2xl border-2 border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:border-sky-400 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-45 dark:border-slate-500 dark:bg-slate-800 dark:text-slate-100 dark:hover:border-slate-400 dark:hover:bg-slate-700 sm:min-h-[44px] sm:w-auto sm:min-w-[7.5rem]";
 
@@ -723,19 +723,6 @@ export function App() {
               </button>
             </div>
           ) : null}
-          <div className="mt-3 w-full max-w-md space-y-1.5 rounded-2xl border border-sky-200/90 bg-gradient-to-b from-sky-50/95 to-white p-3 shadow-md dark:border-sky-800/50 dark:from-slate-800/90 dark:to-slate-900/90">
-            <p className="text-center text-[11px] font-semibold tracking-wide text-sky-800 dark:text-sky-200">
-              가능 시간을 고친 뒤
-            </p>
-            <button
-              type="button"
-              disabled={saving || !sessionUser}
-              onClick={() => void onSave()}
-              className={BTN_SAVE_HERO}
-            >
-              {saving ? "저장 중…" : "가능 시간 저장"}
-            </button>
-          </div>
         </div>
       </header>
 
