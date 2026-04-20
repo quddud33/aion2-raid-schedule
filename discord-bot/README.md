@@ -4,6 +4,13 @@
 
 > **중요:** `SUPABASE_SERVICE_ROLE_KEY`와 `DISCORD_BOT_TOKEN`은 **절대** GitHub에 올리거나 웹(React) 코드에 넣지 마세요. 봇만 아는 환경 변수(`.env`)로만 씁니다.
 
+### Q. GitHub Pages에 웹이랑 같이 봇도 돌릴 수 있나요?
+
+**아니요.** GitHub Pages는 **HTML·JS·CSS 같은 정적 파일만** 올려서 브라우저가 받아 쓰는 서비스라, **항상 켜져 있는 Node 프로세스**(디스코드 봇)는 돌릴 수 없습니다.
+
+- **같은 GitHub 저장소**는 그대로 쓰면 됩니다. 웹은 Pages로 배포하고, 봇 코드(`discord-bot/`)는 repo에만 두고 **실행은 다른 곳**에서 하면 됩니다. (예: 집 PC, Railway·Fly.io·Render 등 소액/무료 티어, VPS)  
+- **GitHub Actions**의 `on: schedule`으로 주기적으로 `node index.mjs --once`를 돌리는 방법도 있지만, 무료 플랜은 **최소 간격·지연**이 있어 “정확히 30분 전” 알림에는 부적합한 경우가 많습니다. 알림 봇은 **상시 실행**이 맞습니다.
+
 ---
 
 ## 0. 미리 준비된 것
@@ -108,6 +115,61 @@
 
 ---
 
+## 5A. Oracle VM을 쓸 때 — **어디서** 무엇을 하나요?
+
+지금처럼 OCI **홈**에서 **Compute → Create a VM instance** 로 들어가 마법사를 진행 중이면, 아래만 순서대로 맞추면 됩니다. (리전은 스크린샷 기준 **South Korea North (Chuncheon)** 도 OK입니다.)
+
+### 로컬 PC (Windows PowerShell) — **VM 만들기 전에** 또는 **지금 바로**
+
+| 단계 | 할 일 |
+|------|--------|
+| 1 | **SSH 키**가 없으면 생성합니다. ([`oracle-cloud-free-vm.md`](oracle-cloud-free-vm.md) 2절 — PowerShell에서 `-N ""` 오류 나면 **`--% -N ""`** 또는 `cmd /c` 예제 사용) |
+| 2 | **`*.pub` 파일 내용 전체**를 메모장으로 열어 복사해 둡니다. VM 만들기 화면의 **SSH keys** 칸에 붙여 넣습니다. |
+| 3 | (나중에) **비밀키 파일**(확장자 없는 쪽) 경로를 기억합니다. 접속할 때 `ssh -i ...` 에 씁니다. |
+| 4 | (나중에) 메모장으로 **`.env` 초안**을 만들어 둘 수 있습니다. 값은 README §1~4·`discord-bot/.env.example` 참고. **이 파일은 Git에 넣지 마세요.** |
+
+### Oracle 브라우저 콘솔 — **Create compute instance** 마법사 안
+
+지금 보이는 **Security (2)** 단계는 **Shielded instance OFF**, 보안 속성 비어 있음 → **디스코드 봇만 쓸 때는 그대로 두고 다음 단계로** 가도 됩니다.
+
+**반드시 같은 마법사 안에서** 확인할 것(다른 단계 이름은 `Basic information`, `Networking` 등일 수 있음):
+
+| 화면/단계 | 할 일 |
+|-----------|--------|
+| **Image** | **Oracle Linux 9** (또는 8) 선택. |
+| **Shape** | **Always Free eligible** 표시가 있는 **Ampere A1** (`VM.Standard.A1.Flex` 등). OCPU **1**, 메모리 **6 GB** 정도로 시작. (무료가 아닌 Shape면 과금될 수 있음) |
+| **Networking** | 인스턴스가 **인터넷에서 SSH로 접속** 가능해야 하므로, **퍼블릭 서브넷** + **퍼블릭 IPv4 할당(Yes)** 을 선택했는지 확인합니다. |
+| **SSH keys** | 로컬에서 만든 **공개키(.pub) 전체**를 **Paste SSH keys** 에 붙여 넣습니다. |
+| **Security (2)** | 기본값 유지해도 됨(위 스크린샷 상태). |
+| 마지막 | **Create** 로 인스턴스 생성. 몇 분 후 상태가 **RUNNING** 이 될 때까지 콘솔에서 대기합니다. |
+
+**SSH가 거절될 때만** OCI 콘솔에서 추가로:
+
+| 어디 | 할 일 |
+|------|--------|
+| **Networking → Virtual cloud networks** → 해당 VCN → **Security Lists** | **Ingress Rules**에 **TCP 목적지 포트 22** 허용(소스는 가능하면 집 공인 IP/32). |
+
+### Oracle 브라우저 콘솔 — **인스턴스가 RUNNING 된 뒤**
+
+| 메뉴 | 할 일 |
+|------|--------|
+| **Compute → Instances** | 방금 만든 인스턴스 클릭 → **Public IP address** 를 메모합니다. |
+
+### 로컬 PC — **SSH 접속 후 (터미널은 이제 VM 안)**
+
+이 단계부터 입력하는 터미널은 **Oracle Linux 안**입니다. 상세 명령은 **[oracle-cloud-free-vm.md](oracle-cloud-free-vm.md)** 5절 이후와 동일합니다.
+
+| 단계 | 할 일 |
+|------|--------|
+| 1 | PowerShell에서 `ssh -i 비밀키경로 opc@공인IP` 로 접속 (`opc` 는 이미지 기본 사용자, 다르면 인스턴스 상세의 Connection 가이드 참고). |
+| 2 | VM 안에서 **Node.js 20** 설치, `git clone` 또는 `scp` 로 **`discord-bot` 폴더** 준비, `npm install`. |
+| 3 | VM 안에서 `nano .env` 로 **README §5와 동일한 항목** 채우기(`chmod 600 .env` 권장). |
+| 4 | `npm run check` → `npm start` 로 테스트. 상시 실행은 **systemd** (`oracle-cloud-free-vm.md` 10절). |
+
+**한 줄 요약:** **키 만들기·복사·SSH 접속·코드·`.env`** = 로컬(또는 VM 셸). **VM 사양·네트워크·방화벽·공인 IP 확인** = Oracle **브라우저 콘솔**.
+
+---
+
 ## 6. 동작 방식 (이 예제 `index.mjs`)
 
 1. **1분마다** Supabase에서 `raid_schedule_confirmation` 전체를 읽습니다.  
@@ -116,6 +178,21 @@
 4. 같은 알림을 두 번 보내지 않도록 `sent-reminders.json` 에 플래그를 저장합니다. (파일 삭제 시 다시 보낼 수 있으니 주의)  
 5. 멘션 대상: 같은 `raid_type`의 `raid_availability` 중, `slots` 배열에 **확정된 `slot_key`가 포함**된 행의 `discord_id`.  
    - `discord_id`가 비어 있으면 웹에서 **「가능 시간 저장」**을 한 번 더 해서 채워야 멘션이 됩니다.
+
+---
+
+## 6-1. 무료·저비용으로 돌릴만한 곳은?
+
+**완전 무료 + 설정 쉬움** 조합은 많지 않고, 각 서비스 **정책은 자주 바뀌므로** 가입 전에 공식 사이트를 한 번 확인하는 것이 좋습니다.
+
+| 방식 | 특징 |
+|------|------|
+| **집 PC / 남는 노트북** | 비용 0. `npm start`만 켜 두면 됨. 잠자기·재부팅 시 멈추니 전원·절전만 조절. |
+| **Oracle Cloud Infrastructure (Always Free)** | 소규모 VM이 **장기 무료**로 쓰이는 경우가 많음. **단계별 설정:** [oracle-cloud-free-vm.md](oracle-cloud-free-vm.md) |
+| **Fly.io / Render / Railway 등** | 무료 크레딧·무료 티어가 있기도 하나, **유휴 시 슬립**이면 디스코드 봇처럼 **항상 붙어 있어야 하는 프로세스**에는 맞지 않을 수 있음. 소액 유료면 안정적인 경우가 많음. |
+| **학생·크레딧** | Azure/GitHub Student Pack 등으로 소액 VM을 쓰는 방법도 있음(자격 조건 확인). |
+
+이 봇(`index.mjs`)은 **짧게만 실행되는 서버리스**보다, **한 프로세스가 계속 도는 환경**(VM, 상시 컨테이너, 안 꺼지는 PC)에 두는 것이 맞습니다.
 
 ---
 

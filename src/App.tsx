@@ -101,6 +101,11 @@ export function App() {
   const [confirmByWeek, setConfirmByWeek] = useState<Map<string, WeekConfirmation>>(() => new Map());
   const [canConfirmSchedule, setCanConfirmSchedule] = useState(false);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  const [importOtherRaidBusy, setImportOtherRaidBusy] = useState(false);
+
+  const otherAionRaidType: AionRaidType | null =
+    universe === "aion" ? (aionRaidType === "rudra" ? "bagot" : "rudra") : null;
+  const otherAionRaidLabel = otherAionRaidType === "rudra" ? "루드라" : "바고트";
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
@@ -470,6 +475,34 @@ export function App() {
     await loadRows();
   };
 
+  const onImportSlotsFromOtherAionRaid = useCallback(async () => {
+    if (!supabase || !otherAionRaidType) return;
+    const { data: u, error: ue } = await supabase.auth.getUser();
+    if (ue || !u.user) {
+      setError(ue?.message ?? "세션을 찾을 수 없습니다.");
+      return;
+    }
+    setImportOtherRaidBusy(true);
+    setError(null);
+    const { data: row, error: fe } = await supabase
+      .from("raid_availability")
+      .select("slots")
+      .eq("user_id", u.user.id)
+      .eq("raid_type", otherAionRaidType)
+      .maybeSingle();
+    setImportOtherRaidBusy(false);
+    if (fe) {
+      setError(fe.message);
+      return;
+    }
+    const slots = (row?.slots ?? []) as string[];
+    if (slots.length === 0) {
+      setError(`${otherAionRaidLabel} 탭에 저장된 가능 시간이 없습니다. 먼저 그쪽에서 「가능 시간 저장」을 해 주세요.`);
+      return;
+    }
+    applyMySlots(() => new Set(slots));
+  }, [supabase, otherAionRaidType, otherAionRaidLabel, applyMySlots]);
+
   const onConfirmSchedule = useCallback(
     async (raidWeekStart: string, slotKey: string) => {
       if (!supabase) return;
@@ -744,6 +777,22 @@ export function App() {
               내 행 삭제
             </button>
           </div>
+          {universe === "aion" && otherAionRaidType ? (
+            <div className="rounded-xl border border-violet-200/80 bg-violet-50/50 p-3 dark:border-violet-900/40 dark:bg-violet-950/30">
+              <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                <span className="font-medium text-violet-800 dark:text-violet-200">{otherAionRaidLabel}</span>에 이미
+                저장해 둔 격자를 이 탭으로 가져옵니다. DB에 반영하려면 「가능 시간 저장」을 눌러 주세요.
+              </p>
+              <button
+                type="button"
+                disabled={saving || importOtherRaidBusy || !sessionUser}
+                onClick={() => void onImportSlotsFromOtherAionRaid()}
+                className="mt-2 min-h-[40px] w-full rounded-lg border border-violet-300 bg-white px-3 py-2 text-sm font-medium text-violet-900 shadow-sm hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-700 dark:bg-slate-900 dark:text-violet-100 dark:hover:bg-violet-950/50"
+              >
+                {importOtherRaidBusy ? "불러오는 중…" : `${otherAionRaidLabel}에서 시간 불러오기`}
+              </button>
+            </div>
+          ) : null}
         </aside>
       </div>
 
