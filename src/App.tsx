@@ -1,6 +1,8 @@
+import type { User } from "@supabase/supabase-js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MatchSummary } from "./components/MatchSummary";
 import { TimeGrid } from "./components/TimeGrid";
+import { discordAvatarUrl, discordNicknameForDb } from "./lib/discordProfile";
 import { isLostArkPortal } from "./lib/lostArkPortal";
 import { buildRaidWeekColumns } from "./lib/slots";
 import { supabase, supabaseConfigured } from "./lib/supabase";
@@ -14,6 +16,7 @@ type AvailabilityRow = {
   user_id: string;
   raid_type: DbRaidType;
   nickname: string;
+  avatar_url?: string | null;
   slots: string[];
   updated_at: string;
 };
@@ -45,15 +48,6 @@ const fmt24 = (d: Date) =>
     hour12: false,
   });
 
-function discordDisplayName(user: { user_metadata?: Record<string, unknown>; email?: string | null }): string {
-  const m = user.user_metadata ?? {};
-  const globalName = typeof m.global_name === "string" ? m.global_name.trim() : "";
-  const fullName = typeof m.full_name === "string" ? m.full_name.trim() : "";
-  const name = typeof m.name === "string" ? m.name.trim() : "";
-  const custom = typeof m.custom_claim === "string" ? m.custom_claim.trim() : "";
-  return globalName || fullName || name || custom || user.email?.split("@")[0] || "Discord";
-}
-
 export function App() {
   const [routeTick, setRouteTick] = useState(0);
   useEffect(() => {
@@ -79,7 +73,6 @@ export function App() {
   const [aionRaidType, setAionRaidType] = useState<AionRaidType>("rudra");
   const dbRaidType: DbRaidType = universe === "lostark" ? "lostark" : aionRaidType;
 
-  const [nickname, setNickname] = useState("");
   const [mySlots, setMySlots] = useState<Set<string>>(() => new Set());
   const slotUndoStack = useRef<Set<string>[]>([]);
   const slotUndoCoalesceRef = useRef(false);
@@ -88,7 +81,7 @@ export function App() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sessionUser, setSessionUser] = useState<{ id: string; email?: string | null; user_metadata?: Record<string, unknown> } | null>(null);
+  const [sessionUser, setSessionUser] = useState<User | null>(null);
   const [darkMode, setDarkMode] = useState(readInitialDark);
 
   useEffect(() => {
@@ -109,11 +102,11 @@ export function App() {
   }, [rows]);
 
   const whoBySlot = useMemo(() => {
-    const m = new Map<string, { nickname: string }[]>();
+    const m = new Map<string, { nickname: string; avatar_url?: string | null }[]>();
     for (const r of rows) {
       for (const s of r.slots) {
         if (!m.has(s)) m.set(s, []);
-        m.get(s)!.push({ nickname: r.nickname });
+        m.get(s)!.push({ nickname: r.nickname, avatar_url: r.avatar_url ?? null });
       }
     }
     for (const list of m.values()) {
@@ -268,6 +261,32 @@ export function App() {
     })();
   }, [rows, sessionUser, dbRaidType]);
 
+  /** Discord에서 이름·프로필이 바뀐 경우 DB 행을 자동 맞춤 (별명 입력 없음) */
+  useEffect(() => {
+    if (!supabase || !sessionUser || loading) return;
+    const mine = rows.find((r) => r.user_id === sessionUser.id);
+    if (!mine) return;
+    const nick = discordNicknameForDb(sessionUser);
+    const av = discordAvatarUrl(sessionUser);
+    const avNorm = av ?? "";
+    const mineAv = mine.avatar_url ?? "";
+    if (mine.nickname === nick && mineAv === avNorm) return;
+    void (async () => {
+      const { error } = await supabase.from("raid_availability").upsert(
+        {
+          user_id: sessionUser.id,
+          raid_type: dbRaidType,
+          nickname: nick,
+          avatar_url: av,
+          slots: mine.slots,
+          updated_at: mine.updated_at,
+        },
+        { onConflict: "user_id,raid_type" },
+      );
+      if (!error) await loadRows();
+    })();
+  }, [supabase, sessionUser, rows, dbRaidType, loading, loadRows]);
+
   const signInWithDiscord = useCallback(async () => {
     if (!supabase) return;
     setError(null);
@@ -277,7 +296,10 @@ export function App() {
     );
     const { error: oerr } = await supabase.auth.signInWithOAuth({
       provider: "discord",
-      options: { redirectTo: window.location.href || redirectTo },
+      options: {
+        redirectTo: window.location.href || redirectTo,
+        scopes: "identify email",
+      },
     });
     if (oerr) setError(oerr.message);
   }, []);
@@ -291,11 +313,6 @@ export function App() {
 
   const onSave = async () => {
     if (!supabase) return;
-    const nn = nickname.trim();
-    if (nn.length < 1 || nn.length > 24) {
-      setError("닉네임은 1~24자로 입력해 주세요.");
-      return;
-    }
     setSaving(true);
     setError(null);
     const { data: u, error: ue } = await supabase.auth.getUser();
@@ -304,10 +321,12 @@ export function App() {
       setError(ue?.message ?? "세션을 찾을 수 없습니다.");
       return;
     }
+    const user = u.user;
     const payload = {
-      user_id: u.user.id,
+      user_id: user.id,
       raid_type: dbRaidType,
-      nickname: nn,
+      nickname: discordNicknameForDb(user),
+      avatar_url: discordAvatarUrl(user),
       slots: [...mySlots],
       updated_at: new Date().toISOString(),
     };
@@ -357,6 +376,9 @@ export function App() {
     universe === "lostark"
       ? "공용 레이드 일정 맞추기입니다. 달력 규칙(수요일 기준 금주·차주)은 아이온2 성역과 같습니다."
       : "루드라 / 바고트 레이드별로 가능한 시간을 표시합니다. 달력은 수요일 초기화 기준 금주·차주(각 7일)입니다.";
+
+  const sessionAvatarUrl = sessionUser ? discordAvatarUrl(sessionUser) : null;
+  const sessionNick = sessionUser ? discordNicknameForDb(sessionUser) : "";
 
   if (!supabaseConfigured) {
     return (
@@ -451,8 +473,22 @@ export function App() {
         </div>
         <div className="flex min-w-0 shrink-0 flex-col items-stretch gap-2 sm:items-end">
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <span className="max-w-[14rem] truncate text-right text-xs text-slate-600 dark:text-slate-400">
-              {discordDisplayName(sessionUser)}
+            {sessionAvatarUrl ? (
+              <img
+                src={sessionAvatarUrl}
+                alt=""
+                className="h-8 w-8 shrink-0 rounded-full border border-sky-200 object-cover dark:border-slate-600"
+                width={32}
+                height={32}
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-sky-200 bg-sky-100 text-xs font-bold text-sky-900 dark:border-slate-600 dark:bg-slate-700 dark:text-sky-100">
+                {sessionNick.slice(0, 1) || "?"}
+              </span>
+            )}
+            <span className="max-w-[14rem] truncate text-right text-xs font-medium text-slate-700 dark:text-slate-300">
+              {sessionNick}
             </span>
             <button
               type="button"
@@ -548,19 +584,28 @@ export function App() {
 
         <aside className={`flex w-full shrink-0 flex-col space-y-4 md:max-w-sm ${card}`}>
           <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">내 정보</h2>
-          <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">
-            표시 이름
-            <input
-              className="mt-1 box-border min-h-[44px] w-full max-w-full rounded-lg border border-sky-200 bg-white px-3 py-2.5 text-base text-slate-800 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900 sm:min-h-0 sm:py-2 sm:text-sm"
-              value={nickname}
-              onChange={(e) => setNickname(e.target.value)}
-              placeholder="예: 캐릭터명 또는 별칭"
-              maxLength={24}
-            />
-          </label>
-          <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-            표에 올라갈 이름입니다. Discord 닉네임과 다르게 적어도 됩니다.
-          </p>
+          <div className="flex items-center gap-3 rounded-xl border border-sky-100 bg-sky-50/60 px-3 py-3 dark:border-slate-700 dark:bg-slate-800/50">
+            {sessionAvatarUrl ? (
+              <img
+                src={sessionAvatarUrl}
+                alt=""
+                className="h-12 w-12 shrink-0 rounded-full border border-white object-cover shadow-sm dark:border-slate-600"
+                width={48}
+                height={48}
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-sky-200 bg-white text-base font-bold text-sky-800 shadow-sm dark:border-slate-600 dark:bg-slate-700 dark:text-sky-100">
+                {sessionNick.slice(0, 1) || "?"}
+              </span>
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{sessionNick}</p>
+              <p className="mt-0.5 text-xs leading-snug text-slate-500 dark:text-slate-400">
+                Discord 프로필이며, 「가능 시간 저장」 시 표에 이름·사진이 반영됩니다.
+              </p>
+            </div>
+          </div>
           <div className="flex flex-col gap-2 sm:flex-row">
             <button
               type="button"
@@ -647,7 +692,26 @@ export function App() {
                   key={r.id}
                   className="border-b border-sky-100/90 text-slate-800 dark:border-slate-700 dark:text-slate-200"
                 >
-                  <td className="py-2 pr-3 font-medium">{r.nickname}</td>
+                  <td className="py-2 pr-3">
+                    <div className="flex min-w-0 items-center gap-2">
+                      {r.avatar_url ? (
+                        <img
+                          src={r.avatar_url}
+                          alt=""
+                          className="h-8 w-8 shrink-0 rounded-full border border-sky-200/80 object-cover dark:border-slate-600"
+                          width={32}
+                          height={32}
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-sky-200/80 bg-sky-100 text-xs font-bold text-sky-900 dark:border-slate-600 dark:bg-slate-700 dark:text-sky-100">
+                          {r.nickname.slice(0, 1)}
+                        </span>
+                      )}
+                      <span className="min-w-0 truncate font-medium">{r.nickname}</span>
+                    </div>
+                  </td>
                   <td className="py-2 pr-3 tabular-nums">{r.slots.length}</td>
                   <td className="py-2 text-xs text-slate-500 tabular-nums dark:text-slate-400">
                     {fmt24(new Date(r.updated_at))}

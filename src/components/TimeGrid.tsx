@@ -61,6 +61,8 @@ function keysInRectangle(
 
 export type SlotWho = {
   nickname: string;
+  /** Discord 등 프로필 URL — 없으면 이니셜만 */
+  avatar_url?: string | null;
 };
 
 const OVERLAP_LEAVE_MS = 140;
@@ -588,8 +590,23 @@ export function TimeGrid({
                       {overlapPopover.who.map((p, i) => (
                         <li
                           key={`${overlapPopover.slotKey}-${i}-${p.nickname}`}
-                          className="py-2.5 first:pt-1 last:pb-1"
+                          className="flex items-center gap-2 py-2.5 first:pt-1 last:pb-1"
                         >
+                          {p.avatar_url ? (
+                            <img
+                              src={p.avatar_url}
+                              alt=""
+                              className="h-7 w-7 shrink-0 rounded-full border border-sky-200/80 object-cover dark:border-slate-600"
+                              width={28}
+                              height={28}
+                              loading="lazy"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-sky-200/80 bg-sky-100 text-[10px] font-bold text-sky-800 dark:border-slate-600 dark:bg-slate-700 dark:text-sky-200">
+                              {p.nickname.slice(0, 1)}
+                            </span>
+                          )}
                           <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">
                             {p.nickname}
                           </span>

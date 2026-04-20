@@ -152,7 +152,9 @@
 
 4) 데이터 모델
 
-   - raid_availability: user_id, raid_type(rudra | bagot | lostark), nickname, slots[], updated_at
+   - raid_availability: user_id, raid_type(rudra | bagot | lostark), nickname, avatar_url(프로필 이미지 URL), slots[], updated_at
+
+     — 이름·프로필은 Discord 세션에서 자동 반영되며, 기존 DB에는 `20260218140000_raid_availability_avatar_url.sql` 로 컬럼 추가
 
    - 기존 DB에 server_name / combat_power 컬럼이 있으면 migrations 의 20260218120000 스크립트로 제거·raid_type 확장
 

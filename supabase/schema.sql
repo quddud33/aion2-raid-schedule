@@ -9,6 +9,7 @@ create table if not exists public.raid_availability (
   user_id uuid not null references auth.users (id) on delete cascade,
   raid_type text not null check (raid_type in ('rudra', 'bagot', 'lostark')),
   nickname text not null,
+  avatar_url text null,
   slots text[] not null default '{}',
   updated_at timestamptz not null default now(),
   unique (user_id, raid_type)
