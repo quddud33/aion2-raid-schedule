@@ -9,6 +9,7 @@
  * 채널에 테스트 글: `/raid_notify test`(실행자 멘션) 또는 npm run test-notify
  * 명령 안내: `/raid_notify help`
  * 내 가능 시간: `/raid_my_schedule` (금주·차주 14일만, 날짜별·연속 구간 묶음)
+ * 겹침: `/raid_overlap` · 주사위: `/dice` (1~100, 채널에 멘션)
  */
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
@@ -124,6 +125,12 @@ const RAID_TYPE_LABEL_KO = {
   rudra: "루드라",
   bagot: "바고트",
   lostark: "로스트아크",
+};
+
+const RAID_TYPE_EMOJI = {
+  rudra: "⚔️",
+  bagot: "🛡️",
+  lostark: "✨",
 };
 
 function parseSlotKeyStr(key) {
@@ -309,6 +316,8 @@ const SLASH_HELP_KO = [
   "**자동 알림:** 웹에서 확정된 일정 기준, 당일 지정 시각·출발 30분 전에 위 채널로 전송 (봇 프로세스가 켜져 있을 때).",
   "",
   "**내 가능 시간:** `/raid_my_schedule` — 금주·차주(레이드 주 14일)만, 날짜별·연속 구간 묶어 표시 (본인만 보임).",
+  "**공대 겹침:** `/raid_overlap` — 멤버 2~6명 지정 시, 금주·차주 안에서 **전원 겹치는** 슬롯만 표시.",
+  "**주사위:** `/dice` — 1~100 무작위, 이 채널에 실행자 멘션.",
 ].join("\n");
 
 function buildSlashCommands() {
@@ -394,7 +403,131 @@ function buildSlashCommands() {
           ),
       )
       .toJSON(),
+    new SlashCommandBuilder()
+      .setName("raid_overlap")
+      .setDescription("멤버들 레이드 가능 시간이 모두 겹치는 슬롯 (금주·차주)")
+      .addStringOption((o) =>
+        o
+          .setName("raid_type")
+          .setDescription("레이드 종류")
+          .setRequired(true)
+          .addChoices(
+            { name: "루드라", value: "rudra" },
+            { name: "바고트", value: "bagot" },
+            { name: "로스트아크", value: "lostark" },
+          ),
+      )
+      .addUserOption((o) => o.setName("member_1").setDescription("멤버 1").setRequired(true))
+      .addUserOption((o) => o.setName("member_2").setDescription("멤버 2").setRequired(true))
+      .addUserOption((o) => o.setName("member_3").setDescription("멤버 3").setRequired(false))
+      .addUserOption((o) => o.setName("member_4").setDescription("멤버 4").setRequired(false))
+      .addUserOption((o) => o.setName("member_5").setDescription("멤버 5").setRequired(false))
+      .addUserOption((o) => o.setName("member_6").setDescription("멤버 6").setRequired(false))
+      .toJSON(),
+    new SlashCommandBuilder().setName("dice").setDescription("1~100 랜덤 주사위 (이 채널에 멘션)").toJSON(),
   ];
+}
+
+function intersectSlotKeyArrays(slotArrays) {
+  if (slotArrays.length === 0) return [];
+  let acc = new Set(slotArrays[0]);
+  for (let i = 1; i < slotArrays.length; i++) {
+    const next = new Set(slotArrays[i]);
+    acc = new Set([...acc].filter((k) => next.has(k)));
+  }
+  return [...acc];
+}
+
+async function handleOverlapInteraction(supabase, interaction) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: "서버 안에서만 사용할 수 있습니다.", ephemeral: true });
+    return;
+  }
+
+  const raidType = interaction.options.getString("raid_type", true);
+  const picked = [];
+  for (let i = 1; i <= 6; i++) {
+    const u = interaction.options.getUser(`member_${i}`);
+    if (u) picked.push(u);
+  }
+  const seen = new Set();
+  const members = [];
+  for (const u of picked) {
+    if (seen.has(u.id)) continue;
+    seen.add(u.id);
+    members.push(u);
+  }
+  if (members.length < 2) {
+    await interaction.reply({ content: "서로 다른 멤버를 **최소 2명** 지정해 주세요.", ephemeral: true });
+    return;
+  }
+
+  const ids = members.map((m) => m.id);
+  const { data, error } = await supabase
+    .from("raid_availability")
+    .select("discord_id, nickname, slots")
+    .eq("raid_type", raidType)
+    .in("discord_id", ids);
+  if (error) throw error;
+
+  const rowById = new Map();
+  for (const row of data ?? []) {
+    if (row.discord_id) rowById.set(String(row.discord_id), row);
+  }
+
+  const slotArrays = ids.map((id) => {
+    const r = rowById.get(id);
+    return Array.isArray(r?.slots) ? r.slots : [];
+  });
+
+  const common = intersectSlotKeyArrays(slotArrays);
+  const ref = new Date();
+  const { lines: slotLines } = formatFortnightSlotsGrouped(common, ref);
+
+  const nameLines = members.map((u) => {
+    const r = rowById.get(u.id);
+    const nick = r?.nickname?.trim() || u.displayName || u.username;
+    const tag = r ? "" : " _(웹 미등록·가능 시간 없음)_";
+    return `· <@${u.id}> — ${nick}${tag}`;
+  });
+
+  const rtLabel = RAID_TYPE_LABEL_KO[raidType] ?? raidType;
+  const header = `**공대 겹치는 시간** · ${rtLabel} · 금주·차주(14일)\n\n`;
+  const memberBlock = `**멤버 ${members.length}명**\n${nameLines.join("\n")}\n\n`;
+
+  let body;
+  if (slotLines.length === 0) {
+    body =
+      "이 기간에 **전원이 동시에 가능한** 30분 슬롯이 없어요…! 웹에서 가능 시간을 맞춰 볼까요? 🥺";
+  } else {
+    body = "**전원 겹침 시간**\n" + slotLines.join("\n");
+  }
+
+  const out = chunkLines([header + memberBlock + body]);
+  await interaction.reply({
+    content: out[0],
+    allowedMentions: { users: ids },
+  });
+  for (let i = 1; i < out.length; i++) {
+    await interaction.followUp({ content: out[i], allowedMentions: { users: ids } });
+  }
+}
+
+async function handleDiceInteraction(interaction) {
+  const uid = interaction.user.id;
+  const n = Math.floor(Math.random() * 100) + 1;
+  const tails = [
+    "오늘의 숫자야!",
+    "행운을 빌어!",
+    "이걸로 가보자~",
+    "어때? 어때?",
+    "두구두구…",
+  ];
+  const tail = tails[Math.floor(Math.random() * tails.length)];
+  await interaction.reply({
+    content: `🎲 ${tail} <@${uid}> 님, **${n}** (1~100) !`,
+    allowedMentions: { users: [uid] },
+  });
 }
 
 async function handleMyScheduleInteraction(supabase, interaction) {
@@ -481,7 +614,9 @@ async function registerSlashCommandsOnAllGuilds(client) {
   for (const g of guilds) {
     try {
       await rest.put(Routes.applicationGuildCommands(appId, g.id), { body });
-      console.log(`[Discord] 슬래시 /raid_notify, /raid_my_schedule 등록: ${g.name} (${g.id})`);
+      console.log(
+        `[Discord] 슬래시 등록 (/raid_notify, /raid_my_schedule, /raid_overlap, /dice): ${g.name} (${g.id})`,
+      );
     } catch (e) {
       console.error(`[Discord] 슬래시 등록 실패 (${g.name} / ${g.id}):`, e?.rawError?.message ?? e?.message ?? e);
     }
@@ -495,7 +630,9 @@ async function registerSlashCommandsForGuild(client, guildId, guildName = "") {
   if (!appId) return;
   const body = buildSlashCommands();
   await rest.put(Routes.applicationGuildCommands(appId, guildId), { body });
-  console.log(`[Discord] 슬래시 /raid_notify, /raid_my_schedule 등록 (신규 서버): ${guildName || guildId} (${guildId})`);
+  console.log(
+    `[Discord] 슬래시 등록 (신규 서버 · raid_notify·my_schedule·overlap·dice): ${guildName || guildId} (${guildId})`,
+  );
 }
 
 function baseConfigRow(existing) {
@@ -559,11 +696,11 @@ async function handleRaidNotifyInteraction(supabase, interaction) {
     }
     const uid = interaction.user.id;
     const content = [
-      "**[레이드 알림 · 테스트]**",
-      `실행: **${interaction.user.tag}**`,
-      `raid_route: \`${route}\` → <#${targetCid}>`,
-      `시각(로컬): **${formatKo(new Date())}**`,
-      `<@${uid}>`,
+      "📣 **레이드 알림 연결 테스트** (진짜 알림이 아니에요~)",
+      `👤 실행: **${interaction.user.tag}**`,
+      `📍 채널 라우트: \`${route}\` → <#${targetCid}>`,
+      `🕐 지금(로컬): **${formatKo(new Date())}**`,
+      `<@${uid}> 잘 왔지? ✨`,
     ].join("\n");
     await ch.send({ content, allowedMentions: { users: [uid] } });
     await interaction.reply({
@@ -706,11 +843,9 @@ async function runTestSend(client, supabase) {
   }
   const mention = (process.env.TEST_NOTIFY_DISCORD_ID ?? "").trim();
   const lines = [
-    "**[레이드 알림 · 테스트]**",
-    `raid_type(라우팅용): \`${testRaidType}\``,
-    `전송 채널 ID: \`${targetCid}\``,
-    `기본 폴백 ID: \`${effectiveDefaultId}\``,
-    `시각(로컬): **${formatKo(new Date())}**`,
+    "🧪 **레이드 알림 · 터미널 테스트** (평소 자동 알림이랑 같은 채널로 가요)",
+    `raid_type: \`${testRaidType}\` → 채널 \`${targetCid}\``,
+    `기본 폴백: \`${effectiveDefaultId}\` · 로컬 시각 **${formatKo(new Date())}**`,
   ];
   if (mention && /^\d{5,30}$/.test(mention)) {
     lines.push(`멘션 테스트: <@${mention}>`);
@@ -797,27 +932,39 @@ async function runTick(client, supabase, state) {
     const channel = resolvedCh ?? defaultCh;
 
     const participants = await fetchParticipants(supabase, conf.raid_type, conf.slot_key);
+    const em = RAID_TYPE_EMOJI[conf.raid_type] ?? "📌";
+    const raidLabel = RAID_TYPE_LABEL_KO[conf.raid_type] ?? conf.raid_type;
     const mentionLine =
       participants.length > 0
-        ? participants.map((id) => `<@${id}>`).join(" ")
-        : "(멘션할 Discord ID가 없습니다. 웹에서 「가능 시간 저장」을 해 주세요.)";
+        ? `👥 ${participants.map((id) => `<@${id}>`).join(" ")}`
+        : "💤 _(아직 멘션할 분이 없어요… 웹에서 「가능 시간 저장」해 주면 다음부터 불러올게요!)_";
 
     const sendIf = async (kind, targetMs) => {
       const flagKey = `${keyBase}:${kind}`;
       if (nextState[flagKey]) return;
       if (Math.abs(now - targetMs) > 90_000) return;
-      const label =
+      const text =
         kind === "d30"
-          ? "30분 전"
+          ? [
+              `${em} **${raidLabel}** 레이드 곧 출발이에요! 앞으로 **30분** ⏰`,
+              `🗓️ 출발 시각: **${formatKo(slotStart)}**`,
+              mentionLine,
+              "",
+              "_다들 준비됐지? 파이팅! ✨_",
+            ].join("\n")
           : kind === "dDay"
-            ? `당일 ${String(REMIND_DAY_HOUR).padStart(2, "0")}:00`
-            : kind;
-      const text = [
-        `**[레이드 알림 · ${label}]**`,
-        `raid_type: \`${conf.raid_type}\``,
-        `출발 시각(로컬): **${formatKo(slotStart)}**`,
-        mentionLine,
-      ].join("\n");
+            ? [
+                `${em} **${raidLabel}** 오늘 레이드 당일이야! (당일 알림 ${String(REMIND_DAY_HOUR).padStart(2, "0")}:00 기준)`,
+                `🎯 출발 예정: **${formatKo(slotStart)}**`,
+                mentionLine,
+                "",
+                "_늦지 말고 모여요~ 💕_",
+              ].join("\n")
+            : [
+                `${em} **${raidLabel}** 알림`,
+                `출발: **${formatKo(slotStart)}**`,
+                mentionLine,
+              ].join("\n");
       const allowedMentions =
         participants.length > 0 ? { users: participants.slice(0, 100) } : undefined;
       await channel.send({ content: text, allowedMentions });
@@ -874,12 +1021,17 @@ async function main() {
     });
     client.on(Events.InteractionCreate, async (interaction) => {
       if (!interaction.isChatInputCommand()) return;
-      if (interaction.commandName !== "raid_notify" && interaction.commandName !== "raid_my_schedule") return;
+      const cn = interaction.commandName;
+      if (!["raid_notify", "raid_my_schedule", "raid_overlap", "dice"].includes(cn)) return;
       try {
-        if (interaction.commandName === "raid_notify") {
+        if (cn === "raid_notify") {
           await handleRaidNotifyInteraction(supabase, interaction);
-        } else {
+        } else if (cn === "raid_my_schedule") {
           await handleMyScheduleInteraction(supabase, interaction);
+        } else if (cn === "raid_overlap") {
+          await handleOverlapInteraction(supabase, interaction);
+        } else {
+          await handleDiceInteraction(interaction);
         }
       } catch (e) {
         console.error("[slash]", e?.message ?? e);
