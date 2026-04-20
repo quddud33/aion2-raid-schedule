@@ -12,6 +12,9 @@
  * 겹침: `/raid_overlap` (레이드별 웹 전원, 멘션 없음) · 주사위: `/dice` (1~100, 채널에 멘션)
  * 슈상보: `/sugo_ping` — 짝수 시 정각(06~08시 제외) 등록 채널에서 멘션
  * 파티: `/party_recruit` — 최대 8인, 버튼으로 출발·해체·가입·탈퇴
+ *
+ * 부하 완화: 미래 확정 일정 없으면 레이드 틱 조기 종료 / 가능시간 DB 1회만 조회 /
+ * 전송 기록 파일 주기적 정리·실제 알림 보낼 때만 state 저장 (자세한 건 로그 `[최적화]`)
  */
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
@@ -43,8 +46,12 @@ const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 const STATE_PATH = resolve(process.env.SENT_STATE_PATH ?? "./sent-reminders.json");
+/** 저사양 VM: 90~120초 권장(부하·OOM 완화). 기본 60초 유지 */
 const POLL_MS = Number(process.env.POLL_INTERVAL_MS ?? 60_000);
 const REMIND_DAY_HOUR = Math.min(23, Math.max(0, Number(process.env.REMIND_DAY_HOUR ?? 6) || 6));
+/** sent-reminders.json 에서 오래된 키 제거(메모리·디스크·JSON 파싱 부담 완화) */
+const STATE_PRUNE_RAID_DAYS = Math.max(7, Number(process.env.STATE_PRUNE_RAID_DAYS ?? 14) || 14);
+const STATE_PRUNE_SUGO_DAYS = Math.max(3, Number(process.env.STATE_PRUNE_SUGO_DAYS ?? 10) || 10);
 
 const RAID_TYPES = ["rudra", "bagot", "lostark"];
 
@@ -293,20 +300,72 @@ async function saveState(obj) {
   await writeFile(STATE_PATH, JSON.stringify(obj, null, 2), "utf8");
 }
 
-async function fetchParticipants(supabase, raidType, slotKey) {
-  const { data, error } = await supabase
-    .from("raid_availability")
-    .select("nickname, discord_id, slots")
-    .eq("raid_type", raidType);
-  if (error) throw error;
-  const ids = new Set();
-  for (const row of data ?? []) {
-    const slots = row.slots ?? [];
-    if (!Array.isArray(slots) || !slots.includes(slotKey)) continue;
+/** 틱당 1회 쿼리로 끝내기: (raid_type|slot_key) → discord_id[] */
+function buildRaidParticipantIndex(rows) {
+  const m = new Map();
+  for (const row of rows ?? []) {
+    const rt = row.raid_type;
+    if (!rt) continue;
+    const slots = row.slots;
+    if (!Array.isArray(slots)) continue;
     const id = row.discord_id;
-    if (id && /^\d{5,30}$/.test(String(id))) ids.add(String(id));
+    if (!id || !/^\d{5,30}$/.test(String(id))) continue;
+    const sid = String(id);
+    for (const sk of slots) {
+      const key = `${rt}|${sk}`;
+      if (!m.has(key)) m.set(key, []);
+      m.get(key).push(sid);
+    }
   }
-  return [...ids];
+  return m;
+}
+
+function participantsFromIndex(index, raidType, slotKey) {
+  return index.get(`${raidType}|${slotKey}`) ?? [];
+}
+
+/**
+ * 알림 전송 기록이 무한히 쌓이지 않게 정리.
+ * - 레이드: slot_key 날짜가 STATE_PRUNE_RAID_DAYS 일 이전이면 삭제
+ * - 슈상보: sugo|…|yyyy-mm-dd|h 가 STATE_PRUNE_SUGO_DAYS 일 이전이면 삭제
+ */
+function pruneReminderState(state) {
+  const now = Date.now();
+  const raidCut = now - STATE_PRUNE_RAID_DAYS * 24 * 60 * 60 * 1000;
+  const sugoCut = now - STATE_PRUNE_SUGO_DAYS * 24 * 60 * 60 * 1000;
+  const out = { ...state };
+  let removed = 0;
+  for (const key of Object.keys(out)) {
+    if (key.startsWith("sugo|")) {
+      const parts = key.split("|");
+      if (parts.length >= 4) {
+        const day = parts[2]?.slice(0, 10);
+        const t0 = day && /^\d{4}-\d{2}-\d{2}$/.test(day) ? new Date(day + "T12:00:00").getTime() : NaN;
+        if (Number.isFinite(t0) && t0 < sugoCut) {
+          delete out[key];
+          removed++;
+        }
+      }
+      continue;
+    }
+    const lastColon = key.lastIndexOf(":");
+    if (lastColon <= 0) continue;
+    const kind = key.slice(lastColon + 1);
+    if (kind !== "d30" && kind !== "dDay") continue;
+    const base = key.slice(0, lastColon);
+    const segs = base.split("|");
+    if (segs.length < 3) continue;
+    const slotKey = segs[2];
+    const dt = slotKeyToLocalDate(slotKey);
+    if (dt && dt.getTime() < raidCut) {
+      delete out[key];
+      removed++;
+    }
+  }
+  if (removed > 0) {
+    console.log(`[상태] 오래된 전송 기록 키 ${removed}개 제거 (raid≥${STATE_PRUNE_RAID_DAYS}일, sugo≥${STATE_PRUNE_SUGO_DAYS}일)`);
+  }
+  return out;
 }
 
 const TARGET_CHOICES = [
@@ -1291,6 +1350,25 @@ async function runTick(client, supabase, state) {
   const { data: confs, error } = await supabase.from("raid_schedule_confirmation").select("*");
   if (error) throw error;
 
+  const now = Date.now();
+  const relevant = [];
+  for (const conf of confs ?? []) {
+    if (RAID_ALLOWED && !RAID_ALLOWED.has(conf.raid_type)) continue;
+    const slotStart = slotKeyToLocalDate(conf.slot_key);
+    if (!slotStart || slotStart.getTime() <= now) continue;
+    relevant.push({ conf, slotStart });
+  }
+
+  if (relevant.length === 0) {
+    return state;
+  }
+
+  const { data: avRows, error: avErr } = await supabase
+    .from("raid_availability")
+    .select("raid_type, discord_id, slots");
+  if (avErr) throw avErr;
+  const partIndex = buildRaidParticipantIndex(avRows);
+
   let cfg = null;
   try {
     cfg = await fetchReminderChannelConfig(supabase);
@@ -1322,15 +1400,10 @@ async function runTick(client, supabase, state) {
     return state;
   }
 
-  const now = Date.now();
   let nextState = { ...state };
+  let mutated = false;
 
-  for (const conf of confs ?? []) {
-    if (RAID_ALLOWED && !RAID_ALLOWED.has(conf.raid_type)) continue;
-
-    const slotStart = slotKeyToLocalDate(conf.slot_key);
-    if (!slotStart || slotStart.getTime() <= now) continue;
-
+  for (const { conf, slotStart } of relevant) {
     const t30 = slotStart.getTime() - 30 * 60 * 1000;
     const weekKey = String(conf.raid_week_start ?? "").slice(0, 10);
     const keyBase = `${conf.raid_type}|${weekKey}|${conf.slot_key}`;
@@ -1356,7 +1429,7 @@ async function runTick(client, supabase, state) {
     }
     const channel = resolvedCh ?? defaultCh;
 
-    const participants = await fetchParticipants(supabase, conf.raid_type, conf.slot_key);
+    const participants = participantsFromIndex(partIndex, conf.raid_type, conf.slot_key);
     const em = RAID_TYPE_EMOJI[conf.raid_type] ?? "📌";
     const raidLabel = RAID_TYPE_LABEL_KO[conf.raid_type] ?? conf.raid_type;
     const mentionLine =
@@ -1394,6 +1467,7 @@ async function runTick(client, supabase, state) {
         participants.length > 0 ? { users: participants.slice(0, 100) } : undefined;
       await channel.send({ content: text, allowedMentions });
       nextState[flagKey] = new Date().toISOString();
+      mutated = true;
       console.log(`[전송] ${flagKey}`);
     };
 
@@ -1403,7 +1477,7 @@ async function runTick(client, supabase, state) {
     await sendIf("d30", t30);
   }
 
-  await saveState(nextState);
+  if (mutated) await saveState(nextState);
   return nextState;
 }
 
@@ -1478,6 +1552,9 @@ async function main() {
   const raidDesc = RAID_ALLOWED ? [...RAID_ALLOWED].sort().join(", ") : "rudra + bagot + lostark (전체)";
   console.log(
     `[설정] TZ=${process.env.TZ ?? "(기본)"} STATE=${STATE_PATH} POLL=${POLL_MS}ms 당일=${REMIND_DAY_HOUR}시 알림대상=${raidDesc} .env기본채널=${CHANNEL_ID}`,
+  );
+  console.log(
+    `[최적화] 레이드 알림=가능시간 1회 조회·인덱스 / 상태정리 raid≥${STATE_PRUNE_RAID_DAYS}일 sugo≥${STATE_PRUNE_SUGO_DAYS}일 / 전송 시에만 state 저장`,
   );
   console.log(
     `[슈상보] 짝수 시 정각 멘션(06·07·08시 제외) — 시각: ${[...SUGO_MERCHANT_HOURS].sort((a, b) => a - b).join(", ")}`,
@@ -1555,6 +1632,11 @@ async function main() {
 
   const tick = async () => {
     try {
+      const nBefore = Object.keys(state).length;
+      state = pruneReminderState(state);
+      if (Object.keys(state).length !== nBefore) {
+        await saveState(state);
+      }
       state = await runTick(client, supabase, state);
       state = await runSugoMerchantTick(client, supabase, state);
     } catch (e) {
