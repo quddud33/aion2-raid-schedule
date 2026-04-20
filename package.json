@@ -5,13 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/spa-404.mjs",
     "preview": "vite preview",
     "fetch:raid": "node scripts/fetch-availability.mjs",
-    "crawl": "node scripts/crawl-url.mjs",
-    "aion2tool:power": "node scripts/aion2tool-fetch-power.mjs",
-    "aion2tool:servers": "node scripts/dump-aion2tool-servers.mjs",
-    "deploy:functions": "npx supabase@latest functions deploy fetch-combat-power"
+    "crawl": "node scripts/crawl-url.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",

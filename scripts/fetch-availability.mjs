@@ -5,6 +5,7 @@
  * 사용:
  *   npm run fetch:raid -- rudra
  *   npm run fetch:raid -- bagot
+ *   npm run fetch:raid -- lostark
  *   npm run fetch:raid -- all
  *
  * 환경: 프로젝트 루트 .env 의 VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
@@ -46,8 +47,8 @@ if (!baseUrl || !key) {
   process.exit(1);
 }
 
-if (!["rudra", "bagot", "all"].includes(raidArg)) {
-  console.error("인자: rudra | bagot | all");
+if (!["rudra", "bagot", "lostark", "all"].includes(raidArg)) {
+  console.error("인자: rudra | bagot | lostark | all");
   process.exit(1);
 }
 

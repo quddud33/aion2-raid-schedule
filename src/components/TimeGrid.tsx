@@ -61,7 +61,6 @@ function keysInRectangle(
 
 export type SlotWho = {
   nickname: string;
-  server_name: string;
 };
 
 const OVERLAP_LEAVE_MS = 140;
@@ -90,7 +89,7 @@ type Props = {
   /** 포인터 드래그 종료(버튼 업·캡처 해제 등) */
   onDragUndoSessionEnd?: () => void;
   heatCount?: Map<string, number>;
-  /** 슬롯 키별 겹침 인원(닉·서버) — 호버 툴팁용 */
+  /** 슬롯 키별 겹침 인원(닉네임) — 호버 툴팁용 */
   whoBySlot?: Map<string, SlotWho[]>;
   /** 표 카드 상단(제목·설명 등) — 하단 도움말과 같은 카드 안 */
   scheduleIntro?: ReactNode;
@@ -589,12 +588,11 @@ export function TimeGrid({
                       {overlapPopover.who.map((p, i) => (
                         <li
                           key={`${overlapPopover.slotKey}-${i}-${p.nickname}`}
-                          className="flex flex-col gap-0.5 py-2.5 first:pt-1 last:pb-1"
+                          className="py-2.5 first:pt-1 last:pb-1"
                         >
                           <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">
                             {p.nickname}
                           </span>
-                          <span className="text-[10px] text-slate-500 dark:text-slate-400">{p.server_name}</span>
                         </li>
                       ))}
                     </ul>
@@ -615,7 +613,7 @@ export function TimeGrid({
           <strong>한 번의 실행 취소</strong>로 통째로 되돌아갑니다.
         </p>
         <p>
-          겹침이 있는 칸에 <strong>포인터를 올리면</strong> 닉네임·서버 목록이 화면 위쪽 팝업으로 표시됩니다.{" "}
+          겹침이 있는 칸에 <strong>포인터를 올리면</strong> 닉네임 목록이 화면 위쪽 팝업으로 표시됩니다.{" "}
           <strong>숫자</strong>는 그 30분에 가능하다고 적은 인원 수입니다.
         </p>
         <p>

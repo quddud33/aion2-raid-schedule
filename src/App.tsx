@@ -1,22 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MatchSummary } from "./components/MatchSummary";
 import { TimeGrid } from "./components/TimeGrid";
-import { resolveAion2toolServerId } from "./lib/aion2toolCharUrl";
-import { buildPlayncSearchUrl, PLAYNC_CHAR_INDEX } from "./lib/playncCharUrl";
+import { isLostArkPortal } from "./lib/lostArkPortal";
 import { buildRaidWeekColumns } from "./lib/slots";
 import { supabase, supabaseConfigured } from "./lib/supabase";
 
-type RaidType = "rudra" | "bagot";
+type AionRaidType = "rudra" | "bagot";
+type DbRaidType = AionRaidType | "lostark";
+type Universe = "aion" | "lostark";
 
 type AvailabilityRow = {
   id: string;
   user_id: string;
-  raid_type: RaidType;
+  raid_type: DbRaidType;
   nickname: string;
-  server_name: string;
   slots: string[];
-  combat_power: string | null;
-  combat_power_updated_at: string | null;
   updated_at: string;
 };
 
@@ -47,87 +45,51 @@ const fmt24 = (d: Date) =>
     hour12: false,
   });
 
-/** Edge Function invoke 실패 시 사용자에게 보여 줄 안내 */
-function formatCombatInvokeFailure(message: string): string {
-  const m = message.trim() || "알 수 없는 오류";
-  if (/non-2xx/i.test(m)) {
-    return [
-      `전투력 자동 갱신에 실패했습니다. (${m})`,
-      "",
-      "함수가 대시보드에 있어도, 예전 배포본이 HTTP 401·400 등을 쓰면 브라우저 라이브러리가 본문 대신 이 메시지만 보여 줄 수 있습니다.",
-      "→ 저장소를 최신으로 받은 뒤 다시 배포: npm run deploy:functions",
-      "→ 대시보드 → Edge Functions → fetch-combat-power → Logs 에서 실제 응답을 확인할 수 있습니다.",
-      "",
-      "목록은 이미 갱신된 상태입니다. 수동 입력·「전투력 반영」도 그대로 사용할 수 있습니다.",
-    ].join("\n");
-  }
-  const lines = [
-    `전투력 자동 갱신에 실패했습니다. (${m})`,
-    "",
-    "가장 흔한 원인: Supabase에 `fetch-combat-power` 함수를 아직 배포하지 않은 경우입니다.",
-    "1) PC 터미널에서 이 저장소 루트로 이동합니다.",
-    "2) npx supabase@latest login",
-    "3) npx supabase@latest link --project-ref <값>",
-    "   ※ Project Reference ID: Supabase 대시보드 → Project Settings → General",
-    "4) npx supabase@latest functions deploy fetch-combat-power",
-    "5) 대시보드 → Edge Functions 메뉴에 `fetch-combat-power`가 나타나는지 확인합니다.",
-    "",
-    "그 외: 브라우저 광고 차단·회사망이 *.supabase.co 요청을 막는지 확인합니다.",
-    "당분간은 표의 수동 입력 후「전투력 반영」을 사용할 수 있습니다.",
-  ];
-  return lines.join("\n");
-}
-
-/** 번들 이슈로 instanceof FunctionsHttpError 가 실패할 수 있어 이름·context 로 판별 */
-function isLikeFunctionsHttpError(err: unknown): err is { name: string; context: Response } {
-  if (typeof err !== "object" || err === null) return false;
-  const e = err as Record<string, unknown>;
-  return e.name === "FunctionsHttpError" && e.context instanceof Response;
-}
-
-async function readCombatInvokeHttpErrorBody(err: unknown): Promise<{ text: string; status: number } | null> {
-  if (!isLikeFunctionsHttpError(err)) return null;
-  const res = err.context;
-  const status = res.status;
-  try {
-    const text = (await res.clone().text()).trim();
-    if (text.startsWith("{")) {
-      try {
-        const body = JSON.parse(text) as { error?: string; message?: string };
-        const msg =
-          (typeof body.error === "string" && body.error.length > 0 && body.error) ||
-          (typeof body.message === "string" && body.message.length > 0 && body.message) ||
-          text;
-        return { text: msg, status };
-      } catch {
-        return text ? { text, status } : null;
-      }
-    }
-    return text ? { text: text.slice(0, 800), status } : null;
-  } catch {
-    return null;
-  }
+function discordDisplayName(user: { user_metadata?: Record<string, unknown>; email?: string | null }): string {
+  const m = user.user_metadata ?? {};
+  const globalName = typeof m.global_name === "string" ? m.global_name.trim() : "";
+  const fullName = typeof m.full_name === "string" ? m.full_name.trim() : "";
+  const name = typeof m.name === "string" ? m.name.trim() : "";
+  const custom = typeof m.custom_claim === "string" ? m.custom_claim.trim() : "";
+  return globalName || fullName || name || custom || user.email?.split("@")[0] || "Discord";
 }
 
 export function App() {
-  const [raidType, setRaidType] = useState<RaidType>("rudra");
+  const [routeTick, setRouteTick] = useState(0);
+  useEffect(() => {
+    const bump = () => setRouteTick((t) => t + 1);
+    window.addEventListener("hashchange", bump);
+    window.addEventListener("popstate", bump);
+    return () => {
+      window.removeEventListener("hashchange", bump);
+      window.removeEventListener("popstate", bump);
+    };
+  }, []);
+
+  const lostArkGate = useMemo(() => {
+    void routeTick;
+    return isLostArkPortal();
+  }, [routeTick]);
+
+  const [universe, setUniverse] = useState<Universe>("aion");
+  useEffect(() => {
+    if (!lostArkGate && universe === "lostark") setUniverse("aion");
+  }, [lostArkGate, universe]);
+
+  const [aionRaidType, setAionRaidType] = useState<AionRaidType>("rudra");
+  const dbRaidType: DbRaidType = universe === "lostark" ? "lostark" : aionRaidType;
+
   const [nickname, setNickname] = useState("");
-  const [server, setServer] = useState("");
   const [mySlots, setMySlots] = useState<Set<string>>(() => new Set());
   const slotUndoStack = useRef<Set<string>[]>([]);
-  /** true: 포인터 드래그 중 — 스택은 첫 실제 변경 직전 상태만 한 번 push */
   const slotUndoCoalesceRef = useRef(false);
   const slotUndoDragPushedRef = useRef(false);
   const [rows, setRows] = useState<AvailabilityRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [authReady, setAuthReady] = useState(false);
+  const [sessionUser, setSessionUser] = useState<{ id: string; email?: string | null; user_metadata?: Record<string, unknown> } | null>(null);
   const [darkMode, setDarkMode] = useState(readInitialDark);
-  const [myUserId, setMyUserId] = useState<string | null>(null);
-  const [myCombatDraft, setMyCombatDraft] = useState("");
-  const [refreshNote, setRefreshNote] = useState<string | null>(null);
-  const serverCombatSyncedRef = useRef<string | null>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
@@ -147,11 +109,11 @@ export function App() {
   }, [rows]);
 
   const whoBySlot = useMemo(() => {
-    const m = new Map<string, { nickname: string; server_name: string }[]>();
+    const m = new Map<string, { nickname: string }[]>();
     for (const r of rows) {
       for (const s of r.slots) {
         if (!m.has(s)) m.set(s, []);
-        m.get(s)!.push({ nickname: r.nickname, server_name: r.server_name });
+        m.get(s)!.push({ nickname: r.nickname });
       }
     }
     for (const list of m.values()) {
@@ -167,19 +129,11 @@ export function App() {
     const { data, error: e } = await supabase
       .from("raid_availability")
       .select("*")
-      .eq("raid_type", raidType)
+      .eq("raid_type", dbRaidType)
       .order("updated_at", { ascending: false });
     if (e) return { ok: false, message: e.message };
-    const rows = (data ?? []).map((r) => {
-      const row = r as AvailabilityRow;
-      return {
-        ...row,
-        combat_power: row.combat_power ?? null,
-        combat_power_updated_at: row.combat_power_updated_at ?? null,
-      };
-    });
-    return { ok: true, rows };
-  }, [raidType]);
+    return { ok: true, rows: (data ?? []) as AvailabilityRow[] };
+  }, [dbRaidType]);
 
   const loadRows = useCallback(async () => {
     if (!supabase) return;
@@ -198,88 +152,14 @@ export function App() {
     if (!supabase) return;
     setLoading(true);
     setError(null);
-    setRefreshNote(null);
     const first = await fetchRowsFromDb();
+    setLoading(false);
     if (!first.ok) {
       setError(first.message);
-      setLoading(false);
       return;
     }
     setRows(first.rows);
-
-    const { data: u } = await supabase.auth.getUser();
-    const uid = u.user?.id;
-    if (uid) {
-      const mine = first.rows.find((r) => r.user_id === uid);
-      if (mine) {
-        const sid = resolveAion2toolServerId(mine.server_name);
-        if (sid) {
-          const { data: sessWrap } = await supabase.auth.getSession();
-          const access = sessWrap.session?.access_token;
-          if (!access) {
-            setRefreshNote(
-              "로그인 세션 토큰이 없어 전투력 자동 갱신을 건너뜁니다. 페이지를 새로고침한 뒤 다시 시도해 주세요.",
-            );
-          } else {
-            const { data: fnData, error: fnErr } = await supabase.functions.invoke("fetch-combat-power", {
-              body: { serverId: sid, nickname: mine.nickname },
-              headers: { Authorization: `Bearer ${access}` },
-            });
-            if (fnErr) {
-              const parsed = await readCombatInvokeHttpErrorBody(fnErr);
-              const baseMsg = fnErr instanceof Error ? fnErr.message : String(fnErr);
-              if (parsed) {
-                setRefreshNote(
-                  `${parsed.text}\n\n(Edge Function HTTP ${parsed.status}. 위 내용은 응답 본문에서 읽었습니다. GitHub Pages는 저장소 푸시로 프론트도 최신 배포해 주세요.)`,
-                );
-              } else {
-                setRefreshNote(formatCombatInvokeFailure(baseMsg));
-              }
-            } else if (fnData && typeof fnData === "object") {
-              const fd = fnData as {
-                ok?: boolean;
-                error?: string;
-                combat_power?: string;
-                plaync_profile_url?: string;
-              };
-              if (fd.ok === true && typeof fd.combat_power === "string" && fd.combat_power.length > 0) {
-                const { error: upErr } = await supabase.from("raid_availability").upsert(
-                  {
-                    user_id: uid,
-                    raid_type: raidType,
-                    nickname: mine.nickname,
-                    server_name: mine.server_name,
-                    slots: mine.slots,
-                    combat_power: fd.combat_power.slice(0, 48),
-                    combat_power_updated_at: new Date().toISOString(),
-                    updated_at: mine.updated_at,
-                  },
-                  { onConflict: "user_id,raid_type" },
-                );
-                if (upErr) setRefreshNote(`DB 반영 실패: ${upErr.message}`);
-                else {
-                  const second = await fetchRowsFromDb();
-                  if (second.ok) setRows(second.rows);
-                  setRefreshNote("전투력·템렙을 플레이NC(검색 API·프로필)에서 가져와 반영했습니다.");
-                }
-              } else {
-                const extra =
-                  typeof fd.plaync_profile_url === "string" && fd.plaync_profile_url.length > 0
-                    ? `\n\n프로필: ${fd.plaync_profile_url}`
-                    : "";
-                setRefreshNote(`${fd.error ?? "전투력을 가져오지 못했습니다."}${extra}`);
-              }
-            }
-          }
-        } else {
-          setRefreshNote(
-            "서버명이 내부 서버 ID 목록과 맞지 않아 전투력 자동 갱신을 건너뜁니다. (플레이NC 검색에 쓰는 serverId)",
-          );
-        }
-      }
-    }
-    setLoading(false);
-  }, [fetchRowsFromDb, raidType]);
+  }, [fetchRowsFromDb]);
 
   const beginSlotUndoDragSession = useCallback(() => {
     slotUndoCoalesceRef.current = true;
@@ -317,7 +197,7 @@ export function App() {
 
   useEffect(() => {
     slotUndoStack.current = [];
-  }, [raidType]);
+  }, [dbRaidType]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -335,74 +215,37 @@ export function App() {
 
   useEffect(() => {
     if (!supabase) {
-      setAuthReady(false);
+      setSessionUser(null);
       return;
     }
-    let cancelled = false;
-    (async () => {
-      const { data: sess } = await supabase.auth.getSession();
-      if (!sess.session) {
-        const { error: anonErr } = await supabase.auth.signInAnonymously();
-        if (anonErr) {
-          if (!cancelled) {
-            setError(anonErr.message);
-            setAuthReady(false);
-          }
-          return;
-        }
-      }
-      if (!cancelled) setAuthReady(true);
-    })();
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSessionUser(session?.user ?? null);
+    });
+    void supabase.auth.getSession().then(({ data }) => {
+      setSessionUser(data.session?.user ?? null);
+    });
     return () => {
-      cancelled = true;
+      sub.subscription.unsubscribe();
     };
   }, []);
 
   useEffect(() => {
-    if (!supabase || !authReady) {
-      setMyUserId(null);
-      return;
-    }
-    let cancelled = false;
-    void supabase.auth.getUser().then(({ data }) => {
-      if (!cancelled) setMyUserId(data.user?.id ?? null);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [authReady]);
-
-  useEffect(() => {
-    if (!myUserId) {
-      setMyCombatDraft("");
-      serverCombatSyncedRef.current = null;
-      return;
-    }
-    const mine = rows.find((r) => r.user_id === myUserId);
-    const cp = mine?.combat_power ?? "";
-    if (serverCombatSyncedRef.current !== cp) {
-      serverCombatSyncedRef.current = cp;
-      setMyCombatDraft(cp);
-    }
-  }, [rows, myUserId]);
-
-  useEffect(() => {
-    if (!supabase || !authReady) return;
+    if (!supabase || !sessionUser) return;
     void loadRows();
-  }, [authReady, loadRows]);
+  }, [sessionUser, loadRows]);
 
   useEffect(() => {
-    if (!supabase || !authReady) return;
+    if (!supabase || !sessionUser) return;
     const client = supabase;
     const channel = client
-      .channel(`raid_availability:${raidType}`)
+      .channel(`raid_availability:${dbRaidType}`)
       .on(
         "postgres_changes",
         {
           event: "*",
           schema: "public",
           table: "raid_availability",
-          filter: `raid_type=eq.${raidType}`,
+          filter: `raid_type=eq.${dbRaidType}`,
         },
         () => {
           void loadRows();
@@ -412,10 +255,10 @@ export function App() {
     return () => {
       void client.removeChannel(channel);
     };
-  }, [authReady, raidType, loadRows]);
+  }, [sessionUser, dbRaidType, loadRows]);
 
   useEffect(() => {
-    if (!supabase || !authReady) return;
+    if (!supabase || !sessionUser) return;
     void (async () => {
       const { data: u } = await supabase.auth.getUser();
       const uid = u.user?.id;
@@ -423,18 +266,34 @@ export function App() {
       const mine = rows.find((r) => r.user_id === uid);
       setMySlots(new Set(mine?.slots ?? []));
     })();
-  }, [rows, authReady, raidType]);
+  }, [rows, sessionUser, dbRaidType]);
+
+  const signInWithDiscord = useCallback(async () => {
+    if (!supabase) return;
+    setError(null);
+    const redirectTo = `${window.location.origin}${import.meta.env.BASE_URL.replace(/\/?$/, "/")}`.replace(
+      /([^:]\/)\/+/g,
+      "$1",
+    );
+    const { error: oerr } = await supabase.auth.signInWithOAuth({
+      provider: "discord",
+      options: { redirectTo: window.location.href || redirectTo },
+    });
+    if (oerr) setError(oerr.message);
+  }, []);
+
+  const signOut = useCallback(async () => {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setRows([]);
+    setMySlots(new Set());
+  }, []);
 
   const onSave = async () => {
     if (!supabase) return;
     const nn = nickname.trim();
-    const sv = server.trim();
     if (nn.length < 1 || nn.length > 24) {
       setError("닉네임은 1~24자로 입력해 주세요.");
-      return;
-    }
-    if (sv.length < 1 || sv.length > 24) {
-      setError("서버명은 1~24자로 입력해 주세요.");
       return;
     }
     setSaving(true);
@@ -445,15 +304,11 @@ export function App() {
       setError(ue?.message ?? "세션을 찾을 수 없습니다.");
       return;
     }
-    const mine = rows.find((r) => r.user_id === u.user.id);
     const payload = {
       user_id: u.user.id,
-      raid_type: raidType,
+      raid_type: dbRaidType,
       nickname: nn,
-      server_name: sv,
       slots: [...mySlots],
-      combat_power: mine?.combat_power ?? null,
-      combat_power_updated_at: mine?.combat_power_updated_at ?? null,
       updated_at: new Date().toISOString(),
     };
     const { error: ie } = await supabase.from("raid_availability").upsert(payload, {
@@ -466,46 +321,6 @@ export function App() {
     }
     await loadRows();
     slotUndoStack.current = [];
-  };
-
-  const saveMyCombat = async () => {
-    if (!supabase) return;
-    const { data: u, error: ue } = await supabase.auth.getUser();
-    if (ue || !u.user) {
-      setError(ue?.message ?? "세션을 찾을 수 없습니다.");
-      return;
-    }
-    const mine = rows.find((r) => r.user_id === u.user.id);
-    if (!mine) {
-      setError("먼저 닉네임·서버·가능 시간을 저장한 뒤 전투력을 반영할 수 있습니다.");
-      return;
-    }
-    const raw = myCombatDraft.trim();
-    if (raw.length > 48) {
-      setError("전투력은 48자 이내로 입력해 주세요.");
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    const payload = {
-      user_id: u.user.id,
-      raid_type: raidType,
-      nickname: mine.nickname,
-      server_name: mine.server_name,
-      slots: mine.slots,
-      combat_power: raw.length ? raw : null,
-      combat_power_updated_at: raw.length ? new Date().toISOString() : null,
-      updated_at: mine.updated_at,
-    };
-    const { error: ie } = await supabase.from("raid_availability").upsert(payload, {
-      onConflict: "user_id,raid_type",
-    });
-    setSaving(false);
-    if (ie) {
-      setError(ie.message);
-      return;
-    }
-    await loadRows();
   };
 
   const onClearMine = async () => {
@@ -521,7 +336,7 @@ export function App() {
       .from("raid_availability")
       .delete()
       .eq("user_id", u.user.id)
-      .eq("raid_type", raidType);
+      .eq("raid_type", dbRaidType);
     setSaving(false);
     if (de) {
       setError(de.message);
@@ -531,6 +346,17 @@ export function App() {
     setMySlots(new Set());
     await loadRows();
   };
+
+  const scheduleLabel =
+    universe === "lostark" ? "로스트아크 (공용)" : aionRaidType === "rudra" ? "루드라" : "바고트";
+
+  const pageTitle = universe === "lostark" ? "로스트아크 · 레이드 일정" : "아이온2 성역 일정";
+  const pageBadge =
+    universe === "lostark" ? "Lost Ark · 공용" : "Aion 2 · 성역(레이드)";
+  const pageIntro =
+    universe === "lostark"
+      ? "공용 레이드 일정 맞추기입니다. 달력 규칙(수요일 기준 금주·차주)은 아이온2 성역과 같습니다."
+      : "루드라 / 바고트 레이드별로 가능한 시간을 표시합니다. 달력은 수요일 초기화 기준 금주·차주(각 7일)입니다.";
 
   if (!supabaseConfigured) {
     return (
@@ -544,7 +370,7 @@ export function App() {
             height={44}
           />
           <div>
-            <h1 className="text-2xl font-semibold text-slate-800 dark:text-slate-100">아이온2 성역 일정</h1>
+            <h1 className="text-2xl font-semibold text-slate-800 dark:text-slate-100">일정 맞추기</h1>
             <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">
               Supabase 환경 변수가 없습니다. 루트에{" "}
               <code className="rounded bg-sky-100 px-1 text-sky-900 dark:bg-slate-800 dark:text-sky-200">
@@ -557,15 +383,44 @@ export function App() {
               ,{" "}
               <code className="rounded bg-sky-100 px-1 text-sky-900 dark:bg-slate-800 dark:text-sky-200">
                 VITE_SUPABASE_ANON_KEY
-              </code>{" "}
+              </code>
               를 설정한 뒤{" "}
               <code className="rounded bg-sky-100 px-1 text-sky-900 dark:bg-slate-800 dark:text-sky-200">
                 npm run dev
-              </code>{" "}
+              </code>
               를 다시 실행하세요.
             </p>
           </div>
         </header>
+      </div>
+    );
+  }
+
+  if (!sessionUser) {
+    return (
+      <div className="mx-auto flex min-h-full max-w-md flex-col justify-center gap-6 p-6">
+        <header className="text-center">
+          <h1 className="text-2xl font-semibold text-slate-800 dark:text-slate-100">일정 맞추기</h1>
+          <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">
+            Supabase에서 Discord 로그인을 켠 뒤, 아래 버튼으로 로그인해 주세요.
+          </p>
+        </header>
+        {error && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-100">
+            {error}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => void signInWithDiscord()}
+          className="min-h-[48px] rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500"
+        >
+          Discord로 계속하기
+        </button>
+        <p className="text-center text-xs text-slate-500 dark:text-slate-400">
+          인증은 Supabase OAuth로 처리됩니다. 대시보드 Authentication → Providers → Discord 에 Client ID·Secret을
+          넣고, Redirect URL에 이 사이트 주소를 등록해야 합니다.
+        </p>
       </div>
     );
   }
@@ -586,53 +441,91 @@ export function App() {
           />
           <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-widest text-sky-600 dark:text-sky-400">
-              Aion 2 · 성역(레이드)
+              {pageBadge}
             </p>
             <h1 className="mt-1 text-2xl font-semibold text-slate-800 dark:text-slate-50 sm:text-3xl">
-              일정 맞추기
+              {pageTitle}
             </h1>
-            <p className="mt-2 max-w-2xl text-sm text-slate-600 dark:text-slate-400">
-              루드라 / 바고트 레이드별로 가능한 시간을 표시합니다. 달력은{" "}
-              <strong className="text-slate-800 dark:text-slate-200">수요일 초기화</strong> 기준 금주·차주
-              (각 7일)입니다. 데이터는 Supabase에 저장되며, 익명 세션과 닉네임·서버만으로 참여합니다.
-            </p>
+            <p className="mt-2 max-w-2xl text-sm text-slate-600 dark:text-slate-400">{pageIntro}</p>
           </div>
         </div>
-        <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setDarkMode((d) => !d)}
-            className="min-h-[44px] rounded-xl border border-sky-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm hover:bg-sky-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
-            aria-pressed={darkMode}
-          >
-            {darkMode ? "라이트 모드" : "다크 모드"}
-          </button>
-          <div className="flex min-w-0 gap-1 rounded-xl border border-sky-200 bg-white/90 p-1 shadow-sm dark:border-slate-600 dark:bg-slate-800/90 sm:gap-2">
+        <div className="flex min-w-0 shrink-0 flex-col items-stretch gap-2 sm:items-end">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className="max-w-[14rem] truncate text-right text-xs text-slate-600 dark:text-slate-400">
+              {discordDisplayName(sessionUser)}
+            </span>
             <button
               type="button"
-              className={[
-                "min-h-[44px] flex-1 rounded-lg px-3 py-2 text-sm font-medium transition sm:flex-none sm:px-4",
-                raidType === "rudra"
-                  ? "bg-sky-500 text-white shadow-sm dark:bg-sky-600"
-                  : "text-slate-600 hover:bg-sky-50 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white",
-              ].join(" ")}
-              onClick={() => setRaidType("rudra")}
+              onClick={() => void signOut()}
+              className="min-h-[36px] shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
             >
-              루드라
+              로그아웃
             </button>
             <button
               type="button"
-              className={[
-                "min-h-[44px] flex-1 rounded-lg px-3 py-2 text-sm font-medium transition sm:flex-none sm:px-4",
-                raidType === "bagot"
-                  ? "bg-sky-500 text-white shadow-sm dark:bg-sky-600"
-                  : "text-slate-600 hover:bg-sky-50 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white",
-              ].join(" ")}
-              onClick={() => setRaidType("bagot")}
+              onClick={() => setDarkMode((d) => !d)}
+              className="min-h-[36px] rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-sky-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              aria-pressed={darkMode}
             >
-              바고트
+              {darkMode ? "라이트" : "다크"}
             </button>
           </div>
+          {lostArkGate ? (
+            <div className="flex w-full max-w-md gap-1 rounded-xl border border-sky-200 bg-white/90 p-1 shadow-sm dark:border-slate-600 dark:bg-slate-800/90">
+              <button
+                type="button"
+                className={[
+                  "min-h-[40px] flex-1 rounded-lg px-3 py-2 text-sm font-medium transition",
+                  universe === "aion"
+                    ? "bg-sky-500 text-white shadow-sm dark:bg-sky-600"
+                    : "text-slate-600 hover:bg-sky-50 dark:text-slate-300 dark:hover:bg-slate-700",
+                ].join(" ")}
+                onClick={() => setUniverse("aion")}
+              >
+                아이온2
+              </button>
+              <button
+                type="button"
+                className={[
+                  "min-h-[40px] flex-1 rounded-lg px-3 py-2 text-sm font-medium transition",
+                  universe === "lostark"
+                    ? "bg-violet-600 text-white shadow-sm dark:bg-violet-500"
+                    : "text-slate-600 hover:bg-violet-50 dark:text-slate-300 dark:hover:bg-slate-700",
+                ].join(" ")}
+                onClick={() => setUniverse("lostark")}
+              >
+                로스트아크
+              </button>
+            </div>
+          ) : null}
+          {universe === "aion" ? (
+            <div className="flex w-full max-w-md gap-1 rounded-xl border border-sky-200 bg-white/90 p-1 shadow-sm dark:border-slate-600 dark:bg-slate-800/90 sm:gap-2">
+              <button
+                type="button"
+                className={[
+                  "min-h-[40px] flex-1 rounded-lg px-3 py-2 text-sm font-medium transition sm:flex-none sm:px-4",
+                  aionRaidType === "rudra"
+                    ? "bg-sky-500 text-white shadow-sm dark:bg-sky-600"
+                    : "text-slate-600 hover:bg-sky-50 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white",
+                ].join(" ")}
+                onClick={() => setAionRaidType("rudra")}
+              >
+                루드라
+              </button>
+              <button
+                type="button"
+                className={[
+                  "min-h-[40px] flex-1 rounded-lg px-3 py-2 text-sm font-medium transition sm:flex-none sm:px-4",
+                  aionRaidType === "bagot"
+                    ? "bg-sky-500 text-white shadow-sm dark:bg-sky-600"
+                    : "text-slate-600 hover:bg-sky-50 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white",
+                ].join(" ")}
+                onClick={() => setAionRaidType("bagot")}
+              >
+                바고트
+              </button>
+            </div>
+          ) : null}
         </div>
       </header>
 
@@ -648,7 +541,6 @@ export function App() {
             columns={columns}
             participants={rows.map((r) => ({
               nickname: r.nickname,
-              server_name: r.server_name,
               slots: r.slots,
             }))}
           />
@@ -656,47 +548,37 @@ export function App() {
 
         <aside className={`flex w-full shrink-0 flex-col space-y-4 md:max-w-sm ${card}`}>
           <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">내 정보</h2>
-        <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">
-          캐릭터 닉네임
-          <input
-            className="mt-1 box-border min-h-[44px] w-full max-w-full rounded-lg border border-sky-200 bg-white px-3 py-2.5 text-base text-slate-800 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900 sm:min-h-0 sm:py-2 sm:text-sm"
-            value={nickname}
-            onChange={(e) => setNickname(e.target.value)}
-            placeholder="예: 반갑꼬리"
-            maxLength={24}
-          />
-        </label>
-        <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">
-          서버
-          <input
-            className="mt-1 box-border min-h-[44px] w-full max-w-full rounded-lg border border-sky-200 bg-white px-3 py-2.5 text-base text-slate-800 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900 sm:min-h-0 sm:py-2 sm:text-sm"
-            value={server}
-            onChange={(e) => setServer(e.target.value)}
-            placeholder="예: 무닌"
-            maxLength={24}
-          />
-        </label>
-        <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-          브라우저에 익명 로그인 세션이 저장됩니다. 다른 기기에서는 다시 입력하면 새 줄로 올라갑니다.
-        </p>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <button
-            type="button"
-            disabled={saving || !authReady}
-            onClick={() => void onSave()}
-            className="min-h-[44px] flex-1 rounded-xl bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-sky-600 dark:hover:bg-sky-500 sm:py-2.5"
-          >
-            {saving ? "저장 중…" : "가능 시간 저장"}
-          </button>
-          <button
-            type="button"
-            disabled={saving || !authReady}
-            onClick={() => void onClearMine()}
-            className="min-h-[44px] rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700 hover:border-sky-300 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 sm:py-2.5"
-          >
-            내 행 삭제
-          </button>
-        </div>
+          <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">
+            표시 이름
+            <input
+              className="mt-1 box-border min-h-[44px] w-full max-w-full rounded-lg border border-sky-200 bg-white px-3 py-2.5 text-base text-slate-800 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900 sm:min-h-0 sm:py-2 sm:text-sm"
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              placeholder="예: 캐릭터명 또는 별칭"
+              maxLength={24}
+            />
+          </label>
+          <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+            표에 올라갈 이름입니다. Discord 닉네임과 다르게 적어도 됩니다.
+          </p>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button
+              type="button"
+              disabled={saving || !sessionUser}
+              onClick={() => void onSave()}
+              className="min-h-[44px] flex-1 rounded-xl bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-sky-600 dark:hover:bg-sky-500 sm:py-2.5"
+            >
+              {saving ? "저장 중…" : "가능 시간 저장"}
+            </button>
+            <button
+              type="button"
+              disabled={saving || !sessionUser}
+              onClick={() => void onClearMine()}
+              className="min-h-[44px] rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700 hover:border-sky-300 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 sm:py-2.5"
+            >
+              내 행 삭제
+            </button>
+          </div>
         </aside>
       </div>
 
@@ -713,10 +595,7 @@ export function App() {
             <>
               <div>
                 <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
-                  내 가능 시간{" "}
-                  <span className="font-medium text-slate-500 dark:text-slate-400">
-                    ({raidType === "rudra" ? "루드라" : "바고트"})
-                  </span>
+                  내 가능 시간 <span className="font-medium text-slate-500 dark:text-slate-400">({scheduleLabel})</span>
                 </h2>
                 <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
                   표는 위에서부터 금주(수~화) 7일, 이어서{" "}
@@ -738,48 +617,22 @@ export function App() {
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-slate-600 dark:text-slate-400">
             <button
               type="button"
-              disabled={loading || !authReady}
-              title="DB 목록을 불러오고, 본인 행이 있으면 플레이NC 검색 JSON API로 캐릭터를 찾은 뒤 전투력·템렙을 조회합니다(Edge 배포 필요)."
+              disabled={loading || !sessionUser}
+              title="DB에서 참가자 목록을 다시 불러옵니다."
               onClick={() => void onRefreshParticipants()}
               className="min-h-[36px] rounded-lg border border-sky-200 bg-white px-3 py-1.5 font-medium text-slate-700 shadow-sm hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
             >
-              {loading ? "갱신 중…" : "목록·전투력 갱신"}
+              {loading ? "갱신 중…" : "목록 갱신"}
             </button>
-            <span className="hidden text-slate-300 sm:inline dark:text-slate-600" aria-hidden>
-              |
-            </span>
-            <span className="max-w-md leading-relaxed">
-              「목록·전투력 갱신」은 DB 목록을 불러오고, 본인이 등록돼 있으면 플레이NC 공식 검색 JSON API(
-              <span className="font-mono text-[10px]">/api/search/aion2/search/v2/character</span>)으로{" "}
-              <span className="font-mono text-[10px]">characterId</span>를 찾은 뒤 프로필 HTML에서 전투력·템렙을
-              읽습니다. 초기 HTML에 수치가 없으면 안내와 함께 프로필 URL이 표시되며, 그때는「전투력 반영」으로 수동
-              입력하면 됩니다.{" "}
-              <a
-                href={PLAYNC_CHAR_INDEX}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-medium text-sky-600 underline-offset-2 hover:underline dark:text-sky-400"
-              >
-                플레이NC 캐릭터 정보실
-              </a>
-              을 열 수 있습니다. 표의「공식」은 마족 기준 웹 검색 링크입니다(천족은 URL의 race=1로 바꿔 보세요).
-            </span>
             <span className="tabular-nums text-slate-500 dark:text-slate-400">{rows.length}명</span>
           </div>
         </div>
-        {refreshNote && (
-          <p className="mt-2 whitespace-pre-line rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-xs leading-relaxed text-slate-700 dark:border-slate-600 dark:bg-slate-800/60 dark:text-slate-300">
-            {refreshNote}
-          </p>
-        )}
         <div className="mt-4 overflow-x-auto">
-          <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+          <table className="w-full min-w-[480px] border-collapse text-left text-sm">
             <thead>
               <tr className="border-b border-sky-100 text-xs uppercase tracking-wide text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                <th className="py-2 pr-3 font-medium">닉네임</th>
-                <th className="py-2 pr-3 font-medium">서버</th>
+                <th className="py-2 pr-3 font-medium">이름</th>
                 <th className="py-2 pr-3 font-medium">가능 칸</th>
-                <th className="py-2 pr-3 font-medium normal-case">전투력</th>
                 <th className="py-2 font-medium normal-case">
                   <span className="block">일정 갱신</span>
                   <span className="block text-[10px] font-normal normal-case tracking-normal text-slate-400 dark:text-slate-500">
@@ -789,71 +642,21 @@ export function App() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
-                const sidRow = resolveAion2toolServerId(r.server_name);
-                const charUrl = sidRow ? buildPlayncSearchUrl(sidRow, r.nickname, 2) : null;
-                const isMine = myUserId !== null && r.user_id === myUserId;
-                return (
-                  <tr
-                    key={r.id}
-                    className="border-b border-sky-100/90 text-slate-800 dark:border-slate-700 dark:text-slate-200"
-                  >
-                    <td className="py-2 pr-3">{r.nickname}</td>
-                    <td className="py-2 pr-3 text-slate-600 dark:text-slate-400">{r.server_name}</td>
-                    <td className="py-2 pr-3 tabular-nums">{r.slots.length}</td>
-                    <td className="max-w-[14rem] py-2 pr-3 align-top text-xs">
-                      <div className="flex flex-col gap-1.5">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-medium tabular-nums text-slate-800 dark:text-slate-100">
-                            {r.combat_power?.trim() ? r.combat_power : "—"}
-                          </span>
-                          <a
-                            href={charUrl ?? PLAYNC_CHAR_INDEX}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            title="플레이NC 검색(기본 마족 race=2). 천족은 URL의 race=1로 변경"
-                            className="shrink-0 font-medium text-sky-600 underline-offset-2 hover:underline dark:text-sky-400"
-                          >
-                            공식
-                          </a>
-                        </div>
-                        {r.combat_power_updated_at && (
-                          <span className="text-[10px] leading-tight text-slate-400 dark:text-slate-500">
-                            전투력 반영: {fmt24(new Date(r.combat_power_updated_at))}
-                          </span>
-                        )}
-                        {isMine && (
-                          <div className="flex flex-col gap-1.5 pt-0.5 sm:flex-row sm:items-center">
-                            <input
-                              className="box-border min-h-[40px] w-full min-w-0 flex-1 rounded-md border border-sky-200 bg-white px-2 py-2 text-sm text-slate-800 outline-none focus:border-sky-400 focus:ring-1 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900 sm:min-h-0 sm:py-1.5"
-                              value={myCombatDraft}
-                              onChange={(e) => setMyCombatDraft(e.target.value)}
-                              placeholder="예: 523.9K / 4,144 (전투력 / 템렙)"
-                              maxLength={48}
-                              disabled={saving}
-                              aria-label="내 전투력 입력"
-                            />
-                            <button
-                              type="button"
-                              disabled={saving || !authReady}
-                              onClick={() => void saveMyCombat()}
-                              className="min-h-[40px] shrink-0 rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/50 dark:text-sky-200 dark:hover:bg-sky-900/60 sm:min-h-0 sm:py-1.5"
-                            >
-                              {saving ? "저장 중…" : "전투력 반영"}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </td>
-                    <td className="py-2 text-xs text-slate-500 tabular-nums dark:text-slate-400">
-                      {fmt24(new Date(r.updated_at))}
-                    </td>
-                  </tr>
-                );
-              })}
+              {rows.map((r) => (
+                <tr
+                  key={r.id}
+                  className="border-b border-sky-100/90 text-slate-800 dark:border-slate-700 dark:text-slate-200"
+                >
+                  <td className="py-2 pr-3 font-medium">{r.nickname}</td>
+                  <td className="py-2 pr-3 tabular-nums">{r.slots.length}</td>
+                  <td className="py-2 text-xs text-slate-500 tabular-nums dark:text-slate-400">
+                    {fmt24(new Date(r.updated_at))}
+                  </td>
+                </tr>
+              ))}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="py-6 text-center text-slate-500 dark:text-slate-400">
+                  <td colSpan={3} className="py-6 text-center text-slate-500 dark:text-slate-400">
                     아직 등록된 일정이 없습니다.
                   </td>
                 </tr>

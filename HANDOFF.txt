@@ -3,72 +3,18 @@
 ================================================================================
 
 [목적]
-- 아이온2 성역(레이드) 일정 맞추기 정적 웹앱. 루드라 / 바고트 탭별로 본인 가능 시간을 표에 표시·저장.
-- Supabase raid_availability에 저장. 익명 로그인 후 닉네임·서버 입력 → 저장 플로우.
-- 등록 인원 기준 “전원 겹치는 시간”은 교집합(슬롯 1칸 이상 적은 사람만 포함). 최대 8인 파티 가정은 문구 수준.
-- 정적 호스팅만으로는 DB 불가 → Supabase(PostgreSQL + Auth + Realtime). GitHub Pages + Actions 배포.
-
-[기술 스택]
-- Vite 5 + React 18 + TypeScript + Tailwind 3
-- @supabase/supabase-js — 익명 로그인 signInAnonymously(), upsert, Realtime postgres_changes
-- 빌드 시 import.meta.env.VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY
-
-[주요 파일]
-- src/App.tsx — raidType(rudra|bagot), 익명 세션, rows 로드/저장/내 행 삭제, heatCount·whoBySlot, 슬롯 실행취소 스택(드래그 세션 합치기)
-- src/components/TimeGrid.tsx — 금주+차주 14일(수요일 기준 레이드 주), 각 날짜당 09:00–24:00 30분 격자, 드래그·Shift 직사각형, 날짜별 전체, heatCount·whoBySlot 겹침·포털 팝업(who 목록), scheduleIntro 슬롯
-- src/components/MatchSummary.tsx — 교집합을 금주/차주로 나눠 뱃지 표시; columns prop 필수
-- src/lib/slots.ts — slotKey, parseSlotKey, buildRaidWeekColumns, intersectSlots, groupConsecutive, formatRangeLabel, filterSlotsByRaidPhase, dateKeyLocal
-- src/lib/supabase.ts — URL/anon 없으면 “환경 변수 없음” 단순 안내
-- supabase/schema.sql — raid_availability, RLS
-- .github/workflows/pages.yml — 빌드 후 Pages 배포
-- 배포및설정.txt, .env.example
-
-[달력·슬롯 규칙]
-- buildRaidWeekColumns(ref): 가장 최근 수요일 00:00을 주 시작으로 금주 7일 + 차주 7일(총 14일). DayColumn.raidWeek는 "current" | "next"(i<7 / i>=7).
-- TimeGrid: 하루당 SLOT_START_MIN=9*60 ~ 24:00, 30분 단위. slotKey는 lib/slots.slotKey와 동일(YYYY-MM-DD@분4자리).
-- MatchSummary: columns prop 필수. 전체 교집합 후 filterSlotsByRaidPhase로 금주·차주 분리, 뱃지는 groupConsecutive + formatRangeLabel. 예전 <details> 30분 전체 목록은 삭제됨.
-
-[TimeGrid 동작 요약]
-- 일반 pointerdown: 드래그 시작; dragSnapshot=선택 복사, 기준 칸 비었으면 직사각형 채움·아니면 비움. pointermove마다 동일 스냅샷 기준으로 직사각형 갱신.
-- App: beginSlotUndoDragSession / endSlotUndoDragSession + coalesce — 드래그 한 번(누름~뗌)당 실행취소 스택 1칸(첫 실제 변경 직전 스냅샷만 push). TimeGrid에는 onDragUndoSessionStart/End로 전달.
-- Shift+다른 칸: 직사각형. 마지막 “일반 클릭”으로 지정한 칸(shiftDesignatedAnchorRef)과 같으면 그때 저장한 선택 여부(shiftBaselineHadSlotRef)로 채움/비움; 연속 Shift만이면 당시 selected 기준.
-- 겹침 heat>0: createPortal로 document.body 고정 팝업, 뷰포트 maxHeight·단일 배경, 스크롤 시·Esc·슬롯 클릭 시 닫힘. 드래그 중에는 팝업 미오픈.
-- scheduleIntro: “내 가능 시간 (탭명)” + 설명을 표 카드 상단에 넣음.
-
-[레이아웃·스타일]
-- index.css: body/#root min-height 100%, 그라데이션 제거 — 라이트 bg-sky-50, 다크 bg-slate-950 단색.
-- App: MatchSummary + 내 정보 aside를 flex, gap-8(2rem), md:flex-row 좌우.
-- TimeGrid 하단에 사용 설명(실행취소·겹침 팝업·Shift·드래그 등) 문단.
+- 아이온2 성역(루드라/바고트) + 선택 시 로스트아크 공용 일정. 가능 시간 격자·Supabase 저장·전원 교집합 요약.
+- 인증: **Discord OAuth** (Supabase Provider). 익명 로그인 제거됨.
+- 로스트아크 UI: `VITE_LOSTARK_ENTRY_PATH` 또는 `VITE_LOSTARK_ENTRY_HASH` 로 입장한 경우에만 헤더에 탭 노출.
 
 [데이터 모델]
-- raid_availability: user_id, raid_type rudra|bagot, nickname, server_name, slots text[], updated_at; unique(user_id, raid_type)
-- RLS: 전체 SELECT, 본인만 INSERT/UPDATE/DELETE
-- Realtime: raid_type 필터 구독 후 loadRows
+- raid_availability: user_id, raid_type (rudra | bagot | lostark), nickname, slots[], updated_at
+- unique(user_id, raid_type). RLS 동일. Realtime raid_type 필터.
 
-[실행 취소]
-- Ctrl/Cmd+Z: 입력/textarea/contenteditable 포커스가 아닐 때만(브라우저 기본 동작 유지). 드래그는 한 세션당 스택 1칸.
-- 레이드 탭 변경·저장 성공·내 행 삭제 시 스택 비움.
-
-[Supabase 필수]
-- schema.sql 실행, Anonymous auth 켜기, anon 키만 프론트(GitHub Actions secret 동일). service_role 금지.
-
-[GitHub Pages]
-- Actions에 VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY. Pages 소스: GitHub Actions.
-- base URL: 워크플로에서 저장소명 기반; 사용자 도메인 루트(/)면 secret VITE_BASE=/ 등 문서 참고.
-
-[로컬]
-- .env에 두 변수 → npm install → npm run dev
-
-[대화에서 나온 미구현·참고]
-- Discord OAuth: Supabase에서 가능하나 현재 코드는 익명만 사용. 연동 시 Provider 설정 + signInWithOAuth + 세션/행 매핑 설계 필요.
-
-[Cursor 규칙]
-- .cursor/rules/response-description.mdc: 응답 맨 아래 PR용 “## Description (복사용)” 블록 추가.
-
-[사용자 선호(대화)]
-- 한국어 응답, 실제 환경에서 명령·빌드 직접 실행, 날짜는 대화 시점 user_info의 Today 기준(연도 혼동 방지).
-
-[구버전 설명 주의]
-- 예전 문서의 “18:00~익일 06:00”, MatchSummary “30분 단위 전체 목록 details” 등은 폐기됨. 위 TimeGrid/MatchSummary 기준이 맞음.
-
-================================================================================
+[주요 파일]
+- src/App.tsx — universe(aion|lostark), dbRaidType, Discord 로그인/로그아웃, rows CRUD
+- src/lib/lostArkPortal.ts — 입장 경로·hash 판별
+- src/components/TimeGrid.tsx, MatchSummary.tsx — 닉네임만 겹침 표시
+- supabase/schema.sql, migrations/20260218120000_*.sql
+- scripts/spa-404.mjs — build 후 dist/404.html 복사 (경로 입장용)
+- 배포및설정.txt, .env.example

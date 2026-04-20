@@ -11,7 +11,6 @@ import type { DayColumn } from "../lib/slots";
 
 type Participant = {
   nickname: string;
-  server_name: string;
   slots: string[];
 };
 
