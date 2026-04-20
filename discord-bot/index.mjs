@@ -11,12 +11,18 @@
  * 내 가능 시간: `/raid_my_schedule` (금주·차주 14일만, 날짜별·연속 구간 묶음)
  * 겹침: `/raid_overlap` (레이드별 웹 전원, 멘션 없음) · 주사위: `/dice` (1~100, 채널에 멘션)
  * 슈상보: `/sugo_ping` — 짝수 시 정각(06~08시 제외) 등록 채널에서 멘션
+ * 파티: `/party_recruit` — 최대 8인, 버튼으로 출발·해체·가입·탈퇴
  */
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   Client,
+  EmbedBuilder,
   Events,
   GatewayIntentBits,
   PermissionFlagsBits,
@@ -66,6 +72,10 @@ const warnedBadChannelIds = new Set();
 
 /** 슈상보: 짝수 시 정각 알림. 오전 6~8시(6·7·8시) 제외 → 0,2,4,10,…,22 */
 const SUGO_MERCHANT_HOURS = new Set([0, 2, 4, 10, 12, 14, 16, 18, 20, 22]);
+
+const PARTY_MAX_TOTAL = 8;
+const PARTY_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function requireEnv(name, v) {
   if (!v) {
@@ -323,6 +333,7 @@ const SLASH_HELP_KO = [
   "**공대 겹침:** `/raid_overlap` — 해당 레이드 **웹 등록 전원** 기준, 금주·차주에서 **전원 겹치는** 슬롯 (닉네임만, 멘션 없음).",
   "**주사위:** `/dice` — 1~100 무작위, 이 채널에 실행자 멘션.",
   "**슈상보:** `/sugo_ping` — `register`/`unregister` 본인만, `list`는 서버 관리. 짝수 시 정각(06~08시 제외) 등록 채널에서 한 번에 멘션.",
+  "**파티 구인:** `/party_recruit` — `create`로 모집 글(파티장=실행자, 최대 8인), `kick`으로 추방. 버튼: 출발·해체(빨강), 가입·탈퇴(파랑).",
 ].join("\n");
 
 function buildSlashCommands() {
@@ -433,6 +444,21 @@ function buildSlashCommands() {
       .addSubcommand((sc) => sc.setName("unregister").setDescription("슈상보 알림 해제 (본인만)"))
       .addSubcommand((sc) =>
         sc.setName("list").setDescription("이 서버 등록자 목록 (서버 관리 전용)"),
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("party_recruit")
+      .setDescription("파티 구인 (최대 8인 · 실행자가 파티장)")
+      .addSubcommand((sc) =>
+        sc.setName("create").setDescription("이 채널에 파티 모집 메시지 올리기"),
+      )
+      .addSubcommand((sc) =>
+        sc
+          .setName("kick")
+          .setDescription("파티원 추방 (파티장 전용 · 열린 파티 1개 기준)")
+          .addUserOption((o) =>
+            o.setName("target").setDescription("추방할 멤버").setRequired(true),
+          ),
       )
       .toJSON(),
   ];
@@ -623,6 +649,312 @@ async function handleSugoPingInteraction(supabase, interaction) {
   }
 }
 
+function buildPartyEmbed(row) {
+  const leader = String(row.leader_id ?? "");
+  const members = Array.isArray(row.member_ids) ? row.member_ids.map(String) : [];
+  const total = 1 + members.length;
+  const statusLabel =
+    row.status === "open"
+      ? "🟢 모집 중"
+      : row.status === "departed"
+        ? "✅ 출발 완료 (가입·탈퇴 불가)"
+        : "⛔ 파티 해체 (가입·탈퇴 불가)";
+  const memberLine = members.length ? members.map((id) => `<@${id}>`).join(" ") : "_(없음)_";
+  return new EmbedBuilder()
+    .setTitle("🎮 파티 구인")
+    .setColor(
+      row.status === "open" ? 0x5865f2 : row.status === "departed" ? 0xfbbf24 : 0xed4245,
+    )
+    .addFields(
+      { name: "파티장", value: `<@${leader}>`, inline: true },
+      { name: "인원", value: `${total} / ${PARTY_MAX_TOTAL}`, inline: true },
+      { name: "상태", value: statusLabel, inline: false },
+      { name: "파티원", value: memberLine, inline: false },
+    )
+    .setFooter({ text: `파티장만 출발·해체·추방(kick) 가능 · ID ${row.id}` });
+}
+
+function buildPartyActionRow(partyId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`party:depart:${partyId}`)
+      .setLabel("출발")
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`party:disband:${partyId}`)
+      .setLabel("파티해체")
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`party:join:${partyId}`)
+      .setLabel("파티가입")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`party:leave:${partyId}`)
+      .setLabel("파티탈퇴")
+      .setStyle(ButtonStyle.Primary),
+  );
+}
+
+async function refreshPartyMessage(client, supabase, partyId) {
+  const { data: row, error } = await supabase
+    .from("discord_party_recruit")
+    .select("*")
+    .eq("id", partyId)
+    .maybeSingle();
+  if (error || !row) return;
+  let ch;
+  try {
+    ch = await client.channels.fetch(row.channel_id);
+  } catch {
+    return;
+  }
+  if (!ch?.isTextBased?.()) return;
+  let msg;
+  try {
+    msg = await ch.messages.fetch(row.message_id);
+  } catch {
+    return;
+  }
+  const embed = buildPartyEmbed(row);
+  const components = row.status === "open" ? [buildPartyActionRow(row.id)] : [];
+  await msg.edit({ embeds: [embed], components });
+}
+
+async function handlePartyRecruitCreate(client, supabase, interaction) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: "서버 안에서만 사용할 수 있어요.", ephemeral: true });
+    return;
+  }
+  const ch = interaction.channel;
+  if (!ch?.isTextBased?.()) {
+    await interaction.reply({ content: "메시지를 보낼 수 있는 채널에서만 올릴 수 있어요.", ephemeral: true });
+    return;
+  }
+  const gid = interaction.guildId;
+  const leaderId = interaction.user.id;
+
+  const { data: existing, error: exErr } = await supabase
+    .from("discord_party_recruit")
+    .select("id")
+    .eq("guild_id", gid)
+    .eq("leader_id", leaderId)
+    .eq("status", "open")
+    .maybeSingle();
+  if (exErr) throw exErr;
+  if (existing) {
+    await interaction.reply({
+      content: "이 서버에 **이미 열린 파티**가 있어요. 먼저 **출발** 또는 **파티해체** 후 다시 만들어 주세요.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const partyId = randomUUID();
+  const tempRow = {
+    id: partyId,
+    leader_id: leaderId,
+    member_ids: [],
+    status: "open",
+  };
+  await interaction.reply({
+    embeds: [buildPartyEmbed(tempRow)],
+    components: [buildPartyActionRow(partyId)],
+  });
+  const msg = await interaction.fetchReply();
+  const { error } = await supabase.from("discord_party_recruit").insert({
+    id: partyId,
+    guild_id: gid,
+    channel_id: interaction.channelId,
+    message_id: msg.id,
+    leader_id: leaderId,
+    member_ids: [],
+    status: "open",
+  });
+  if (error) {
+    await msg.delete().catch(() => {});
+    await interaction.followUp({
+      content: "파티를 저장하지 못했어요. 잠시 후 다시 시도해 주세요.",
+      ephemeral: true,
+    });
+    return;
+  }
+}
+
+async function handlePartyRecruitKick(client, supabase, interaction) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: "서버 안에서만 사용할 수 있어요.", ephemeral: true });
+    return;
+  }
+  const target = interaction.options.getUser("target", true);
+  const gid = interaction.guildId;
+  const leaderId = interaction.user.id;
+
+  const { data: row, error: fe } = await supabase
+    .from("discord_party_recruit")
+    .select("*")
+    .eq("guild_id", gid)
+    .eq("leader_id", leaderId)
+    .eq("status", "open")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (fe) throw fe;
+  if (!row) {
+    await interaction.reply({
+      content: "열린 파티가 없거나 파티장이 아니에요.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (target.id === row.leader_id) {
+    await interaction.reply({ content: "파티장은 추방할 수 없어요.", ephemeral: true });
+    return;
+  }
+  const members = Array.isArray(row.member_ids) ? [...row.member_ids] : [];
+  if (!members.includes(target.id)) {
+    await interaction.reply({ content: "그 유저는 이 파티 멤버가 아니에요.", ephemeral: true });
+    return;
+  }
+  const next = members.filter((id) => id !== target.id);
+  const { error: ue } = await supabase
+    .from("discord_party_recruit")
+    .update({ member_ids: next, updated_at: new Date().toISOString() })
+    .eq("id", row.id);
+  if (ue) throw ue;
+  await refreshPartyMessage(client, supabase, row.id);
+  await interaction.reply({
+    content: `${target} 님을 파티에서 내보냈어요.`,
+    ephemeral: true,
+  });
+}
+
+async function handlePartyRecruitInteraction(client, supabase, interaction) {
+  const sub = interaction.options.getSubcommand(true);
+  if (sub === "create") {
+    await handlePartyRecruitCreate(client, supabase, interaction);
+    return;
+  }
+  if (sub === "kick") {
+    await handlePartyRecruitKick(client, supabase, interaction);
+    return;
+  }
+}
+
+async function handlePartyButtonInteraction(client, supabase, interaction) {
+  if (!interaction.isButton()) return;
+  const id = interaction.customId ?? "";
+  const parts = id.split(":");
+  if (parts.length !== 3 || parts[0] !== "party") return;
+  const kind = parts[1];
+  const partyId = parts[2];
+  if (!PARTY_UUID_RE.test(partyId)) return;
+
+  const { data: row, error } = await supabase
+    .from("discord_party_recruit")
+    .select("*")
+    .eq("id", partyId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!row) {
+    await interaction.reply({ content: "파티를 찾을 수 없어요.", ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const uid = interaction.user.id;
+  const leaderId = String(row.leader_id ?? "");
+  const open = row.status === "open";
+
+  const ephemeralError = async (msg) => {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp({ content: msg, ephemeral: true }).catch(() => {});
+    } else {
+      await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+    }
+  };
+
+  if (!open) {
+    await ephemeralError("이미 **출발**했거나 **해체**된 파티예요.");
+    return;
+  }
+
+  if (kind === "depart" || kind === "disband") {
+    if (uid !== leaderId) {
+      await ephemeralError("파티장만 사용할 수 있어요.");
+      return;
+    }
+    await interaction.deferUpdate();
+    const nextStatus = kind === "depart" ? "departed" : "disbanded";
+    const { error: ue } = await supabase
+      .from("discord_party_recruit")
+      .update({ status: nextStatus, updated_at: new Date().toISOString() })
+      .eq("id", partyId)
+      .eq("status", "open");
+    if (ue) throw ue;
+    await refreshPartyMessage(client, supabase, partyId);
+
+    if (kind === "depart") {
+      const members = Array.isArray(row.member_ids) ? row.member_ids.map(String) : [];
+      const allIds = [...new Set([leaderId, ...members])].slice(0, 100);
+      const ch2 = interaction.channel;
+      if (ch2?.isTextBased?.()) {
+        await ch2.send({
+          content: `🚀 **출발합니다!** ${allIds.map((x) => `<@${x}>`).join(" ")}`,
+          allowedMentions: { users: allIds },
+        });
+      }
+    }
+    return;
+  }
+
+  if (kind === "join") {
+    if (uid === leaderId) {
+      await ephemeralError("파티장은 **파티가입**이 필요 없어요.");
+      return;
+    }
+    const members = Array.isArray(row.member_ids) ? [...row.member_ids].map(String) : [];
+    if (members.includes(uid)) {
+      await ephemeralError("이미 이 파티에 참가 중이에요.");
+      return;
+    }
+    if (1 + members.length >= PARTY_MAX_TOTAL) {
+      await ephemeralError(`파티가 가득 찼어요 (${PARTY_MAX_TOTAL}/${PARTY_MAX_TOTAL}).`);
+      return;
+    }
+    members.push(uid);
+    await interaction.deferUpdate();
+    const { error: je } = await supabase
+      .from("discord_party_recruit")
+      .update({ member_ids: members, updated_at: new Date().toISOString() })
+      .eq("id", partyId)
+      .eq("status", "open");
+    if (je) throw je;
+    await refreshPartyMessage(client, supabase, partyId);
+    return;
+  }
+
+  if (kind === "leave") {
+    if (uid === leaderId) {
+      await ephemeralError("파티장은 여기서 탈퇴할 수 없어요. **파티해체**를 이용해 주세요.");
+      return;
+    }
+    const members = Array.isArray(row.member_ids) ? [...row.member_ids].map(String) : [];
+    if (!members.includes(uid)) {
+      await ephemeralError("이 파티에 등록되어 있지 않아요.");
+      return;
+    }
+    const next = members.filter((x) => x !== uid);
+    await interaction.deferUpdate();
+    const { error: le } = await supabase
+      .from("discord_party_recruit")
+      .update({ member_ids: next, updated_at: new Date().toISOString() })
+      .eq("id", partyId)
+      .eq("status", "open");
+    if (le) throw le;
+    await refreshPartyMessage(client, supabase, partyId);
+    return;
+  }
+}
+
 async function handleMyScheduleInteraction(supabase, interaction) {
   const uid = interaction.user.id;
   const filter = (interaction.options.getString("raid_type") ?? "all").trim().toLowerCase();
@@ -708,7 +1040,7 @@ async function registerSlashCommandsOnAllGuilds(client) {
     try {
       await rest.put(Routes.applicationGuildCommands(appId, g.id), { body });
       console.log(
-        `[Discord] 슬래시 등록 (raid_notify·my_schedule·overlap·dice·sugo_ping): ${g.name} (${g.id})`,
+        `[Discord] 슬래시 등록 (…·sugo_ping·party_recruit): ${g.name} (${g.id})`,
       );
     } catch (e) {
       console.error(`[Discord] 슬래시 등록 실패 (${g.name} / ${g.id}):`, e?.rawError?.message ?? e?.message ?? e);
@@ -1178,10 +1510,19 @@ async function main() {
       }
     });
     client.on(Events.InteractionCreate, async (interaction) => {
-      if (!interaction.isChatInputCommand()) return;
-      const cn = interaction.commandName;
-      if (!["raid_notify", "raid_my_schedule", "raid_overlap", "dice", "sugo_ping"].includes(cn)) return;
       try {
+        if (interaction.isButton() && interaction.customId?.startsWith("party:")) {
+          await handlePartyButtonInteraction(client, supabase, interaction);
+          return;
+        }
+        if (!interaction.isChatInputCommand()) return;
+        const cn = interaction.commandName;
+        if (
+          !["raid_notify", "raid_my_schedule", "raid_overlap", "dice", "sugo_ping", "party_recruit"].includes(
+            cn,
+          )
+        )
+          return;
         if (cn === "raid_notify") {
           await handleRaidNotifyInteraction(supabase, interaction);
         } else if (cn === "raid_my_schedule") {
@@ -1190,16 +1531,21 @@ async function main() {
           await handleOverlapInteraction(supabase, interaction);
         } else if (cn === "dice") {
           await handleDiceInteraction(interaction);
-        } else {
+        } else if (cn === "sugo_ping") {
           await handleSugoPingInteraction(supabase, interaction);
+        } else {
+          await handlePartyRecruitInteraction(client, supabase, interaction);
         }
       } catch (e) {
-        console.error("[slash]", e?.message ?? e);
-        const msg = "저장/조회 중 오류가 났습니다. 봇 로그·Supabase 마이그레이션을 확인해 주세요.";
-        if (interaction.deferred || interaction.replied) {
-          await interaction.followUp({ content: msg, ephemeral: true }).catch(() => {});
-        } else {
-          await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+        console.error("[interaction]", e?.message ?? e);
+        const msg =
+          "처리 중 오류가 났습니다. 봇 로그·Supabase 마이그레이션(파티 구인 테이블 등)을 확인해 주세요.";
+        if (interaction.isRepliable()) {
+          if (interaction.deferred || interaction.replied) {
+            await interaction.followUp({ content: msg, ephemeral: true }).catch(() => {});
+          } else {
+            await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+          }
         }
       }
     });

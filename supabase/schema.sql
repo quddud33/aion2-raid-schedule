@@ -263,3 +263,33 @@ comment on table public.discord_sugo_merchant_subscribers is
 alter table public.discord_sugo_merchant_subscribers enable row level security;
 
 revoke all on public.discord_sugo_merchant_subscribers from anon, authenticated;
+
+-- ---------------------------------------------------------------------------
+-- 파티 구인 (마이그레이션 20260421150000 과 동일)
+
+create table if not exists public.discord_party_recruit (
+  id uuid primary key default gen_random_uuid(),
+  guild_id text not null,
+  channel_id text not null,
+  message_id text not null,
+  leader_id text not null,
+  member_ids text[] not null default '{}',
+  status text not null default 'open' check (status in ('open', 'departed', 'disbanded')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint discord_party_recruit_member_ids_max check (cardinality(member_ids) <= 7)
+);
+
+create unique index if not exists discord_party_recruit_message_id_uniq
+  on public.discord_party_recruit (message_id);
+
+create unique index if not exists discord_party_recruit_one_open_per_leader
+  on public.discord_party_recruit (guild_id, leader_id)
+  where (status = 'open');
+
+comment on table public.discord_party_recruit is
+  '파티 구인 메시지·버튼 상태. 봇 service_role 전용.';
+
+alter table public.discord_party_recruit enable row level security;
+
+revoke all on public.discord_party_recruit from anon, authenticated;
