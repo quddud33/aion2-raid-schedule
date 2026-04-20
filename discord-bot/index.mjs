@@ -9,7 +9,7 @@
  * 채널에 테스트 글: `/raid_notify test`(실행자 멘션) 또는 npm run test-notify
  * 명령 안내: `/raid_notify help`
  * 내 가능 시간: `/raid_my_schedule` (금주·차주 14일만, 날짜별·연속 구간 묶음)
- * 겹침: `/raid_overlap` · 주사위: `/dice` (1~100, 채널에 멘션)
+ * 겹침: `/raid_overlap` (레이드별 웹 전원, 멘션 없음) · 주사위: `/dice` (1~100, 채널에 멘션)
  */
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
@@ -316,7 +316,7 @@ const SLASH_HELP_KO = [
   "**자동 알림:** 웹에서 확정된 일정 기준, 당일 지정 시각·출발 30분 전에 위 채널로 전송 (봇 프로세스가 켜져 있을 때).",
   "",
   "**내 가능 시간:** `/raid_my_schedule` — 금주·차주(레이드 주 14일)만, 날짜별·연속 구간 묶어 표시 (본인만 보임).",
-  "**공대 겹침:** `/raid_overlap` — 멤버 2~6명 지정 시, 금주·차주 안에서 **전원 겹치는** 슬롯만 표시.",
+  "**공대 겹침:** `/raid_overlap` — 해당 레이드 **웹 등록 전원** 기준, 금주·차주에서 **전원 겹치는** 슬롯 (닉네임만, 멘션 없음).",
   "**주사위:** `/dice` — 1~100 무작위, 이 채널에 실행자 멘션.",
 ].join("\n");
 
@@ -405,7 +405,7 @@ function buildSlashCommands() {
       .toJSON(),
     new SlashCommandBuilder()
       .setName("raid_overlap")
-      .setDescription("멤버들 레이드 가능 시간이 모두 겹치는 슬롯 (금주·차주)")
+      .setDescription("웹 등록 전원 기준 겹치는 슬롯 (금주·차주, 멘션 없음)")
       .addStringOption((o) =>
         o
           .setName("raid_type")
@@ -417,12 +417,6 @@ function buildSlashCommands() {
             { name: "로스트아크", value: "lostark" },
           ),
       )
-      .addUserOption((o) => o.setName("member_1").setDescription("멤버 1").setRequired(true))
-      .addUserOption((o) => o.setName("member_2").setDescription("멤버 2").setRequired(true))
-      .addUserOption((o) => o.setName("member_3").setDescription("멤버 3").setRequired(false))
-      .addUserOption((o) => o.setName("member_4").setDescription("멤버 4").setRequired(false))
-      .addUserOption((o) => o.setName("member_5").setDescription("멤버 5").setRequired(false))
-      .addUserOption((o) => o.setName("member_6").setDescription("멤버 6").setRequired(false))
       .toJSON(),
     new SlashCommandBuilder().setName("dice").setDescription("1~100 랜덤 주사위 (이 채널에 멘션)").toJSON(),
   ];
@@ -439,61 +433,51 @@ function intersectSlotKeyArrays(slotArrays) {
 }
 
 async function handleOverlapInteraction(supabase, interaction) {
-  if (!interaction.inGuild()) {
-    await interaction.reply({ content: "서버 안에서만 사용할 수 있습니다.", ephemeral: true });
-    return;
-  }
-
   const raidType = interaction.options.getString("raid_type", true);
-  const picked = [];
-  for (let i = 1; i <= 6; i++) {
-    const u = interaction.options.getUser(`member_${i}`);
-    if (u) picked.push(u);
-  }
-  const seen = new Set();
-  const members = [];
-  for (const u of picked) {
-    if (seen.has(u.id)) continue;
-    seen.add(u.id);
-    members.push(u);
-  }
-  if (members.length < 2) {
-    await interaction.reply({ content: "서로 다른 멤버를 **최소 2명** 지정해 주세요.", ephemeral: true });
-    return;
-  }
 
-  const ids = members.map((m) => m.id);
   const { data, error } = await supabase
     .from("raid_availability")
-    .select("discord_id, nickname, slots")
-    .eq("raid_type", raidType)
-    .in("discord_id", ids);
+    .select("nickname, slots")
+    .eq("raid_type", raidType);
   if (error) throw error;
 
-  const rowById = new Map();
-  for (const row of data ?? []) {
-    if (row.discord_id) rowById.set(String(row.discord_id), row);
+  const rows = data ?? [];
+  const nickOf = (r) => (typeof r.nickname === "string" && r.nickname.trim() ? r.nickname.trim() : "(닉 없음)");
+
+  const withSlots = rows.filter((r) => Array.isArray(r.slots) && r.slots.length > 0);
+  const emptySlots = rows.filter((r) => !Array.isArray(r.slots) || r.slots.length === 0);
+
+  const rtLabel = RAID_TYPE_LABEL_KO[raidType] ?? raidType;
+  const header = `**공대 겹치는 시간** · ${rtLabel} · 금주·차주(14일) · 웹 등록 **전원** 기준\n\n`;
+
+  if (rows.length === 0) {
+    await interaction.reply({
+      content: header + "아직 이 레이드 타입으로 웹에 가능 시간을 저장한 분이 없어요.",
+    });
+    return;
   }
 
-  const slotArrays = ids.map((id) => {
-    const r = rowById.get(id);
-    return Array.isArray(r?.slots) ? r.slots : [];
-  });
+  let memberBlock = `**등록 ${rows.length}명** · 겹침 계산은 슬롯이 1개 이상인 분만 포함해요.\n`;
+  memberBlock += `· 슬롯 있음 (${withSlots.length}명): ${withSlots.map(nickOf).join(", ")}\n`;
+  if (emptySlots.length > 0) {
+    memberBlock += `· 슬롯 없음 (${emptySlots.length}명): ${emptySlots.map(nickOf).join(", ")}\n`;
+  }
+  memberBlock += "\n";
 
+  if (withSlots.length < 2) {
+    const out = chunkLines([
+      header + memberBlock,
+      "겹침을 보려면 **슬롯을 넣은 사람이 2명 이상** 있어야 해요. 더 등록되면 다시 눌러 주세요.",
+    ]);
+    await interaction.reply({ content: out[0] });
+    for (let i = 1; i < out.length; i++) await interaction.followUp({ content: out[i] });
+    return;
+  }
+
+  const slotArrays = withSlots.map((r) => r.slots);
   const common = intersectSlotKeyArrays(slotArrays);
   const ref = new Date();
   const { lines: slotLines } = formatFortnightSlotsGrouped(common, ref);
-
-  const nameLines = members.map((u) => {
-    const r = rowById.get(u.id);
-    const nick = r?.nickname?.trim() || u.displayName || u.username;
-    const tag = r ? "" : " _(웹 미등록·가능 시간 없음)_";
-    return `· <@${u.id}> — ${nick}${tag}`;
-  });
-
-  const rtLabel = RAID_TYPE_LABEL_KO[raidType] ?? raidType;
-  const header = `**공대 겹치는 시간** · ${rtLabel} · 금주·차주(14일)\n\n`;
-  const memberBlock = `**멤버 ${members.length}명**\n${nameLines.join("\n")}\n\n`;
 
   let body;
   if (slotLines.length === 0) {
@@ -504,12 +488,9 @@ async function handleOverlapInteraction(supabase, interaction) {
   }
 
   const out = chunkLines([header + memberBlock + body]);
-  await interaction.reply({
-    content: out[0],
-    allowedMentions: { users: ids },
-  });
+  await interaction.reply({ content: out[0] });
   for (let i = 1; i < out.length; i++) {
-    await interaction.followUp({ content: out[i], allowedMentions: { users: ids } });
+    await interaction.followUp({ content: out[i] });
   }
 }
 
