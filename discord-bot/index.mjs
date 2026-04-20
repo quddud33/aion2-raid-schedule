@@ -12,6 +12,7 @@
  * 겹침: `/raid_overlap` (레이드별 웹 전원, 멘션 없음) · 주사위: `/dice` (1~100, 채널에 멘션)
  * 슈상보: `/sugo_ping` — 짝수 시 정각(06~08시 제외) 등록 채널에서 멘션
  * 파티: `/party_recruit` — 최대 8인, 버튼으로 출발·해체·가입·탈퇴
+ * 알람: `/remind` 또는 채팅 `알람 1시간 10분 10초 뒤` 등 복합 시간 합산 / `@봇`+시간 문장
  *
  * 부하 완화: 미래 확정 일정 없으면 레이드 틱 조기 종료 / 가능시간 DB 1회만 조회 /
  * 전송 기록 파일 주기적 정리·실제 알림 보낼 때만 state 저장 (자세한 건 로그 `[최적화]`)
@@ -46,12 +47,330 @@ const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 const STATE_PATH = resolve(process.env.SENT_STATE_PATH ?? "./sent-reminders.json");
+/** `/remind` 예약 목록 (봇 재시작 시 복구) */
+const ALARM_STATE_PATH = resolve(process.env.REMIND_ALARM_PATH ?? "./pending-alarms.json");
 /** 저사양 VM: 90~120초 권장(부하·OOM 완화). 기본 60초 유지 */
 const POLL_MS = Number(process.env.POLL_INTERVAL_MS ?? 60_000);
 const REMIND_DAY_HOUR = Math.min(23, Math.max(0, Number(process.env.REMIND_DAY_HOUR ?? 6) || 6));
 /** sent-reminders.json 에서 오래된 키 제거(메모리·디스크·JSON 파싱 부담 완화) */
 const STATE_PRUNE_RAID_DAYS = Math.max(7, Number(process.env.STATE_PRUNE_RAID_DAYS ?? 14) || 14);
 const STATE_PRUNE_SUGO_DAYS = Math.max(3, Number(process.env.STATE_PRUNE_SUGO_DAYS ?? 10) || 10);
+
+/** `/remind` 최소·최대 지연 (남용 방지). 기본 최대 7일 */
+const REMIND_MIN_MS = Math.max(1_000, Number(process.env.REMIND_MIN_MS ?? 5_000) || 5_000);
+const REMIND_MAX_MS = Math.max(REMIND_MIN_MS, Number(process.env.REMIND_MAX_MS ?? 604_800_000) || 604_800_000);
+const REMIND_MAX_PER_USER = Math.max(1, Math.min(50, Number(process.env.REMIND_MAX_PER_USER ?? 10) || 10));
+
+/** 채팅 알람: 이 문자로 시작하면 파싱 시도. `.env`에서 `REMIND_MSG_PREFIX=` 로 비우면 **봇 멘션만** 트리거 */
+const REMIND_MSG_PREFIX = Object.prototype.hasOwnProperty.call(process.env, "REMIND_MSG_PREFIX")
+  ? String(process.env.REMIND_MSG_PREFIX ?? "")
+  : "알람";
+
+let gAlarmState = { alarms: [] };
+/** @type {Map<string, NodeJS.Timeout>} */
+const gAlarmTimers = new Map();
+let gAlarmClient = null;
+
+async function loadAlarmState() {
+  if (!existsSync(ALARM_STATE_PATH)) return { alarms: [] };
+  try {
+    const raw = await readFile(ALARM_STATE_PATH, "utf8");
+    const p = JSON.parse(raw);
+    const alarms = Array.isArray(p?.alarms) ? p.alarms : [];
+    return { alarms: alarms.filter((a) => a?.id && a?.channelId && a?.targetUserId && Number.isFinite(a?.dueAt)) };
+  } catch {
+    return { alarms: [] };
+  }
+}
+
+async function persistAlarmState() {
+  await writeFile(ALARM_STATE_PATH, JSON.stringify(gAlarmState, null, 2), "utf8");
+}
+
+function computeRemindDelayMs(amount, unit) {
+  const n = Number(amount);
+  if (!Number.isFinite(n) || n < 1) return null;
+  const u = String(unit || "").toLowerCase();
+  if (u === "seconds") return n * 1000;
+  if (u === "minutes") return n * 60 * 1000;
+  if (u === "hours") return n * 60 * 60 * 1000;
+  return null;
+}
+
+function formatRemindLabelKo(amount, unit) {
+  const n = Number(amount);
+  const u = String(unit || "").toLowerCase();
+  if (u === "seconds") return `${n}초 뒤`;
+  if (u === "minutes") return `${n}분 뒤`;
+  if (u === "hours") return `${n}시간 뒤`;
+  return `${n} 뒤`;
+}
+
+function msForKoUnit(n, unitKo) {
+  if (!Number.isFinite(n) || n < 0) return 0;
+  if (unitKo === "초") return n * 1000;
+  if (unitKo === "분") return n * 60 * 1000;
+  if (unitKo === "시간") return n * 60 * 60 * 1000;
+  return 0;
+}
+
+/** `1시간 10분 10초` → `1시간 10분 10초 뒤` */
+function buildKoCompoundRemindLabel(parts) {
+  if (parts.length === 0) return "";
+  return `${parts.map(({ n, unitKo }) => `${n}${unitKo}`).join(" ")} 뒤`;
+}
+
+/**
+ * 채팅 본문의 모든 `N초|분|시간` 구간을 **합산** (예: 1시간 10분 10초).
+ * @returns {{ delayMs: number, labelKo: string } | null}
+ */
+function parseKoRemindContent(content) {
+  const stripped = String(content ?? "")
+    .replace(/<@!?(\d+)>/g, " ")
+    .replace(/<@&(\d+)>/g, " ")
+    .replace(/<#(\d+)>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!stripped) return null;
+  const re = /(\d{1,6})\s*(초|분|시간)/gu;
+  const parts = [];
+  let m;
+  while ((m = re.exec(stripped)) !== null) {
+    const n = Number(m[1]);
+    if (!Number.isFinite(n) || n < 0) continue;
+    if (n === 0) continue;
+    parts.push({ n, unitKo: m[2] });
+  }
+  if (parts.length === 0) return null;
+  let delayMs = 0;
+  for (const { n, unitKo } of parts) {
+    delayMs += msForKoUnit(n, unitKo);
+  }
+  if (delayMs < 1) return null;
+  return { delayMs, labelKo: buildKoCompoundRemindLabel(parts) };
+}
+
+function shouldHandleRemindChatMessage(message, client) {
+  if (!message.guild || message.author.bot) return false;
+  if (!message.channel?.isTextBased?.()) return false;
+  const mentionsBot = message.mentions.users.has(client.user.id);
+  const trimmed = message.content.trimStart();
+  const prefixHit = REMIND_MSG_PREFIX.length > 0 && trimmed.startsWith(REMIND_MSG_PREFIX);
+  if (prefixHit) return true;
+  if (mentionsBot && parseKoRemindContent(message.content)) return true;
+  return false;
+}
+
+function resolveRemindTargetUser(message, client) {
+  const botId = client.user.id;
+  const others = [...message.mentions.users.values()].filter((u) => u.id !== botId);
+  if (others.length >= 1) return others[0];
+  return message.author;
+}
+
+/**
+ * @param {object} p
+ * @param {string} [p.channelId]
+ * @param {string} [p.guildId]
+ * @param {string} [p.createdById]
+ * @param {string} [p.targetUserId]
+ * @param {number} [p.amount] `/remind` 와 함께 `unit`
+ * @param {string} [p.unit]
+ * @param {number} [p.delayMs] 채팅 파싱 합산 시 `labelKo`와 함께 사용
+ * @param {string} [p.labelKo]
+ * @returns {Promise<{ ok: true, alarm: object, whenKo: string } | { ok: false, error: string }>}
+ */
+async function tryScheduleRemind(p) {
+  let delayMs;
+  let labelKo;
+  if (p.delayMs != null && typeof p.labelKo === "string" && p.labelKo.trim()) {
+    delayMs = Number(p.delayMs);
+    labelKo = p.labelKo.trim();
+    if (!Number.isFinite(delayMs)) {
+      return { ok: false, error: "시간을 인식하지 못했어요." };
+    }
+  } else if (p.amount != null && p.unit != null) {
+    const d = computeRemindDelayMs(p.amount, p.unit);
+    if (d == null) {
+      return { ok: false, error: "시간 단위를 인식하지 못했어요." };
+    }
+    delayMs = d;
+    labelKo = formatRemindLabelKo(p.amount, p.unit);
+  } else {
+    return { ok: false, error: "시간을 인식하지 못했어요." };
+  }
+  if (delayMs < REMIND_MIN_MS) {
+    return { ok: false, error: `최소 ${Math.ceil(REMIND_MIN_MS / 1000)}초 이상으로 설정해 주세요.` };
+  }
+  if (delayMs > REMIND_MAX_MS) {
+    return {
+      ok: false,
+      error: `최대 ${Math.floor(REMIND_MAX_MS / (24 * 60 * 60 * 1000))}일 이내로만 예약할 수 있어요.`,
+    };
+  }
+  const activeByUser = gAlarmState.alarms.filter((a) => a.createdById === p.createdById).length;
+  if (activeByUser >= REMIND_MAX_PER_USER) {
+    return {
+      ok: false,
+      error: `한 사람당 동시에 최대 ${REMIND_MAX_PER_USER}개까지만 예약할 수 있어요.`,
+    };
+  }
+  const dueAt = Date.now() + delayMs;
+  const alarm = {
+    id: randomUUID(),
+    channelId: p.channelId,
+    guildId: p.guildId,
+    targetUserId: p.targetUserId,
+    createdById: p.createdById,
+    dueAt,
+    labelKo,
+  };
+  gAlarmState.alarms.push(alarm);
+  await persistAlarmState();
+  scheduleRemindTimer(alarm);
+  return { ok: true, alarm, whenKo: formatKo(new Date(dueAt)) };
+}
+
+function clearRemindTimer(id) {
+  const t = gAlarmTimers.get(id);
+  if (t) clearTimeout(t);
+  gAlarmTimers.delete(id);
+}
+
+async function sendRemindAlarmMessage(alarm) {
+  if (!gAlarmClient) return;
+  try {
+    const ch = await gAlarmClient.channels.fetch(alarm.channelId);
+    if (!ch?.isTextBased?.()) {
+      console.warn(`[알람] 채널을 열 수 없음: ${alarm.channelId}`);
+      return;
+    }
+    const label = typeof alarm.labelKo === "string" && alarm.labelKo ? alarm.labelKo : "알람";
+    const lines = ["⏰ **알람 시간이에요**", `<@${alarm.targetUserId}>`, `_(${label} · 등록: <@${alarm.createdById}>)_`];
+    await ch.send({
+      content: lines.join("\n"),
+      allowedMentions: { users: [alarm.targetUserId, alarm.createdById].filter(Boolean) },
+    });
+  } catch (e) {
+    console.error("[알람 전송 실패]", e?.message ?? e);
+  }
+}
+
+async function fireRemindAlarm(alarmId) {
+  clearRemindTimer(alarmId);
+  const idx = gAlarmState.alarms.findIndex((a) => a.id === alarmId);
+  if (idx < 0) return;
+  const alarm = gAlarmState.alarms[idx];
+  gAlarmState.alarms.splice(idx, 1);
+  await persistAlarmState().catch((e) => console.error("[알람 저장]", e?.message ?? e));
+  await sendRemindAlarmMessage(alarm);
+}
+
+function scheduleRemindTimer(alarm) {
+  const delay = Math.max(0, alarm.dueAt - Date.now());
+  const t = setTimeout(() => void fireRemindAlarm(alarm.id), delay);
+  gAlarmTimers.set(alarm.id, t);
+}
+
+async function initRemindSystem(client) {
+  gAlarmClient = client;
+  gAlarmState = await loadAlarmState();
+  const now = Date.now();
+  const overdue = gAlarmState.alarms.filter((a) => a.dueAt <= now);
+  gAlarmState.alarms = gAlarmState.alarms.filter((a) => a.dueAt > now);
+  await persistAlarmState().catch((e) => console.error("[알람 초기 저장]", e?.message ?? e));
+  for (const a of overdue) {
+    await sendRemindAlarmMessage(a);
+  }
+  for (const a of gAlarmState.alarms) {
+    scheduleRemindTimer(a);
+  }
+  if (overdue.length) {
+    console.log(`[알람] 재시작 후 지난 예약 ${overdue.length}건 즉시 전송`);
+  }
+}
+
+async function handleRemindInteraction(interaction) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: "서버 안에서만 사용할 수 있어요.", ephemeral: true });
+    return;
+  }
+  const ch = interaction.channel;
+  if (!ch?.isTextBased?.()) {
+    await interaction.reply({ content: "메시지를 보낼 수 있는 채널에서만 쓸 수 있어요.", ephemeral: true });
+    return;
+  }
+
+  const amount = interaction.options.getInteger("amount", true);
+  const unit = interaction.options.getString("unit", true);
+  const target = interaction.options.getUser("user") ?? interaction.user;
+
+  const result = await tryScheduleRemind({
+    channelId: interaction.channelId,
+    guildId: interaction.guildId,
+    createdById: interaction.user.id,
+    targetUserId: target.id,
+    amount,
+    unit,
+  });
+  if (!result.ok) {
+    await interaction.reply({ content: `⏰ ${result.error}`, ephemeral: true });
+    return;
+  }
+  await interaction.reply({
+    content: [
+      `⏰ 알람을 등록했어요.`,
+      `· 멘션: <@${target.id}>`,
+      `· 시각: **${result.whenKo}** (${result.alarm.labelKo})`,
+      `_이 채널(<#${interaction.channelId}>)에 올라가요._`,
+    ].join("\n"),
+    ephemeral: true,
+    allowedMentions: { users: [target.id] },
+  });
+}
+
+async function handleRemindMessageCreate(message, client) {
+  if (!shouldHandleRemindChatMessage(message, client)) return;
+  const parsed = parseKoRemindContent(message.content);
+  if (!parsed) {
+    if (REMIND_MSG_PREFIX.length > 0 && message.content.trimStart().startsWith(REMIND_MSG_PREFIX)) {
+      await message
+        .reply({
+          content:
+            "⏰ 예: `알람 1시간 10분 10초 뒤`, `알람 30분 후`, `알람 10초` 또는 봇을 멘션하고 `10분 뒤에 알려줘` 처럼 적어 주세요.",
+          allowedMentions: { repliedUser: false },
+        })
+        .catch(() => {});
+    }
+    return;
+  }
+  const target = resolveRemindTargetUser(message, client);
+  const result = await tryScheduleRemind({
+    channelId: message.channelId,
+    guildId: message.guildId,
+    createdById: message.author.id,
+    targetUserId: target.id,
+    delayMs: parsed.delayMs,
+    labelKo: parsed.labelKo,
+  });
+  if (!result.ok) {
+    await message
+      .reply({ content: `⏰ ${result.error}`, allowedMentions: { repliedUser: false } })
+      .catch(() => {});
+    return;
+  }
+  await message
+    .reply({
+      content: [
+        "⏰ 알람을 등록했어요.",
+        `· 멘션: <@${target.id}>`,
+        `· 시각: **${result.whenKo}** (${result.alarm.labelKo})`,
+        "_이 채널에 올라가요._",
+      ].join("\n"),
+      allowedMentions: { users: [target.id], repliedUser: false },
+    })
+    .catch(() => {});
+}
 
 const RAID_TYPES = ["rudra", "bagot", "lostark"];
 
@@ -393,6 +712,7 @@ const SLASH_HELP_KO = [
   "**주사위:** `/dice` — 1~100 무작위, 이 채널에 실행자 멘션.",
   "**슈상보:** `/sugo_ping` — `register`/`unregister` 본인만, `list`는 서버 관리. 짝수 시 정각(06~08시 제외) 등록 채널에서 한 번에 멘션.",
   "**파티 구인:** `/party_recruit` — `create`로 모집 글(파티장=실행자, 최대 8인), `kick`으로 추방. 버튼: 출발·해체(빨강), 가입·탈퇴(파랑).",
+  "**알람:** `/remind` 또는 채팅 `알람 1시간 10분 10초 뒤`처럼 **여러 단위 합산**(접두 `알람`) / `@봇`+시간 — **이 채널** 멘션. 다른 사람 멘션 시 그 대상.",
 ].join("\n");
 
 function buildSlashCommands() {
@@ -519,6 +839,25 @@ function buildSlashCommands() {
             o.setName("target").setDescription("추방할 멤버").setRequired(true),
           ),
       )
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("remind")
+      .setDescription("일정 시간 뒤 이 채널에서 멘션 알림 (기본: 본인)")
+      .addIntegerOption((o) =>
+        o.setName("amount").setDescription("숫자 (예: 10)").setRequired(true).setMinValue(1).setMaxValue(9999),
+      )
+      .addStringOption((o) =>
+        o
+          .setName("unit")
+          .setDescription("단위")
+          .setRequired(true)
+          .addChoices(
+            { name: "초", value: "seconds" },
+            { name: "분", value: "minutes" },
+            { name: "시간", value: "hours" },
+          ),
+      )
+      .addUserOption((o) => o.setName("user").setDescription("멘션할 사람 (비우면 본인)").setRequired(false))
       .toJSON(),
   ];
 }
@@ -1099,7 +1438,7 @@ async function registerSlashCommandsOnAllGuilds(client) {
     try {
       await rest.put(Routes.applicationGuildCommands(appId, g.id), { body });
       console.log(
-        `[Discord] 슬래시 등록 (…·sugo_ping·party_recruit): ${g.name} (${g.id})`,
+        `[Discord] 슬래시 등록 (…·sugo_ping·party_recruit·remind): ${g.name} (${g.id})`,
       );
     } catch (e) {
       console.error(`[Discord] 슬래시 등록 실패 (${g.name} / ${g.id}):`, e?.rawError?.message ?? e?.message ?? e);
@@ -1559,12 +1898,21 @@ async function main() {
   console.log(
     `[슈상보] 짝수 시 정각 멘션(06·07·08시 제외) — 시각: ${[...SUGO_MERCHANT_HOURS].sort((a, b) => a - b).join(", ")}`,
   );
+  console.log(
+    `[알람 채팅] 접두 "${REMIND_MSG_PREFIX || "(없음·봇멘션만)"}" · Developer Portal에서 **Message Content Intent** 켜야 채팅 파싱 동작`,
+  );
 
   const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+    ],
+  });
   await client.login(TOKEN);
   console.log(`[Discord] 로그인: ${client.user?.tag}`);
 
@@ -1578,12 +1926,20 @@ async function main() {
   }
 
   if (!once) {
+    await initRemindSystem(client);
     await registerSlashCommandsOnAllGuilds(client);
     client.on(Events.GuildCreate, async (guild) => {
       try {
         await registerSlashCommandsForGuild(client, guild.id, guild.name);
       } catch (e) {
         console.error("[Discord] GuildCreate 슬래시 등록 실패:", e?.message ?? e);
+      }
+    });
+    client.on(Events.MessageCreate, async (message) => {
+      try {
+        await handleRemindMessageCreate(message, client);
+      } catch (e) {
+        console.error("[message remind]", e?.message ?? e);
       }
     });
     client.on(Events.InteractionCreate, async (interaction) => {
@@ -1595,9 +1951,15 @@ async function main() {
         if (!interaction.isChatInputCommand()) return;
         const cn = interaction.commandName;
         if (
-          !["raid_notify", "raid_my_schedule", "raid_overlap", "dice", "sugo_ping", "party_recruit"].includes(
-            cn,
-          )
+          ![
+            "raid_notify",
+            "raid_my_schedule",
+            "raid_overlap",
+            "dice",
+            "sugo_ping",
+            "party_recruit",
+            "remind",
+          ].includes(cn)
         )
           return;
         if (cn === "raid_notify") {
@@ -1610,6 +1972,8 @@ async function main() {
           await handleDiceInteraction(interaction);
         } else if (cn === "sugo_ping") {
           await handleSugoPingInteraction(supabase, interaction);
+        } else if (cn === "remind") {
+          await handleRemindInteraction(interaction);
         } else {
           await handlePartyRecruitInteraction(client, supabase, interaction);
         }
