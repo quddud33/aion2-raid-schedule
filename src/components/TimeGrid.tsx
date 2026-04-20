@@ -139,6 +139,8 @@ type Props = {
   whoBySlot?: Map<string, SlotWho[]>;
   /** 표 카드 상단(제목·설명 등) — 하단 도움말과 같은 카드 안 */
   scheduleIntro?: ReactNode;
+  /** 제목 옆·아래에 붙는 저장 등 액션(가능 시간 저장 버튼 등) */
+  scheduleToolbar?: ReactNode;
 };
 
 export function TimeGrid({
@@ -150,6 +152,7 @@ export function TimeGrid({
   heatCount,
   whoBySlot,
   scheduleIntro,
+  scheduleToolbar,
 }: Props) {
   const columnsRef = useRef(columns);
   columnsRef.current = columns;
@@ -417,15 +420,24 @@ export function TimeGrid({
 
   return (
     <div className="slot-grid max-w-full rounded-2xl border border-sky-200/80 bg-white/80 p-5 shadow-sm backdrop-blur-sm dark:border-slate-600 dark:bg-slate-900/70">
-      {scheduleIntro != null && (
-        <div className="mb-3 flex flex-wrap items-end justify-between gap-2 border-b border-sky-100/90 pb-3 dark:border-slate-700/90">
-          {scheduleIntro}
-          <p className="w-full text-[11px] leading-snug text-slate-500 dark:text-slate-400 md:hidden">
-            <strong className="text-slate-600 dark:text-slate-300">세로 편집</strong>으로 하루만 크게
-            펼쳐 입력하거나, 날짜 칩으로 해당 줄로 이동할 수 있습니다. 표 모드에서는{" "}
-            <strong className="text-slate-600 dark:text-slate-300">가로 스크롤</strong>·이전·다음 시간
-            버튼을 쓰면 됩니다.
-          </p>
+      {(scheduleIntro != null || scheduleToolbar != null) && (
+        <div className="mb-3 border-b border-sky-100/90 pb-3 dark:border-slate-700/90">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
+            {scheduleIntro != null ? <div className="min-w-0 flex-1">{scheduleIntro}</div> : null}
+            {scheduleToolbar != null ? (
+              <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:max-w-md sm:flex-row sm:justify-end">
+                {scheduleToolbar}
+              </div>
+            ) : null}
+          </div>
+          {scheduleIntro != null ? (
+            <p className="mt-2 w-full text-[11px] leading-snug text-slate-500 dark:text-slate-400 md:hidden">
+              <strong className="text-slate-600 dark:text-slate-300">세로 편집</strong>으로 하루만 크게
+              펼쳐 입력하거나, 날짜 칩으로 해당 줄로 이동할 수 있습니다. 표 모드에서는{" "}
+              <strong className="text-slate-600 dark:text-slate-300">가로 스크롤</strong>·이전·다음 시간
+              버튼을 쓰면 됩니다.
+            </p>
+          ) : null}
         </div>
       )}
 

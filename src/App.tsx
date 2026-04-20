@@ -33,6 +33,14 @@ type AvailabilityRow = {
 
 const logoUrl = `${import.meta.env.BASE_URL}logo.png`;
 
+/** 가능 시간 저장 — 눈에 띄게(여러 위치에서 공통) */
+const BTN_SAVE_HERO =
+  "inline-flex min-h-[52px] w-full min-w-0 flex-1 items-center justify-center rounded-2xl bg-sky-500 px-5 text-base font-bold text-white shadow-lg shadow-sky-600/30 ring-2 ring-sky-400/50 transition hover:bg-sky-600 hover:shadow-sky-600/40 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45 dark:bg-sky-600 dark:ring-sky-500/40 dark:shadow-sky-900/40 dark:hover:bg-sky-500 sm:text-[15px]";
+const BTN_SAVE_DOCK =
+  "inline-flex min-h-[56px] w-full items-center justify-center rounded-2xl bg-sky-500 px-5 text-lg font-bold text-white shadow-lg shadow-sky-700/35 ring-2 ring-white/30 transition hover:bg-sky-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45 dark:bg-sky-600 dark:ring-sky-300/20 dark:hover:bg-sky-500";
+const BTN_CLEAR_OUTLINE =
+  "inline-flex min-h-[48px] w-full shrink-0 items-center justify-center rounded-2xl border-2 border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:border-sky-400 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-45 dark:border-slate-500 dark:bg-slate-800 dark:text-slate-100 dark:hover:border-slate-400 dark:hover:bg-slate-700 sm:min-h-[44px] sm:w-auto sm:min-w-[7.5rem]";
+
 function readInitialDark(): boolean {
   if (typeof window === "undefined") return false;
   return window.localStorage.getItem("aion2-theme") === "dark";
@@ -632,7 +640,7 @@ export function App() {
     "rounded-2xl border border-sky-200/90 bg-white/90 p-5 shadow-md backdrop-blur-sm dark:border-slate-600 dark:bg-slate-900/80";
 
   return (
-    <div className="mx-auto flex min-h-full max-w-7xl flex-col gap-6 px-3 py-4 pb-16 sm:px-8 sm:py-8">
+    <div className="mx-auto flex min-h-full max-w-7xl flex-col gap-6 px-3 py-4 pb-28 sm:px-8 sm:py-8 md:pb-16">
       <header className="flex flex-col gap-4 border-b border-sky-200/90 pb-6 dark:border-slate-700 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 gap-3">
           <img
@@ -715,6 +723,19 @@ export function App() {
               </button>
             </div>
           ) : null}
+          <div className="mt-3 w-full max-w-md space-y-1.5 rounded-2xl border border-sky-200/90 bg-gradient-to-b from-sky-50/95 to-white p-3 shadow-md dark:border-sky-800/50 dark:from-slate-800/90 dark:to-slate-900/90">
+            <p className="text-center text-[11px] font-semibold tracking-wide text-sky-800 dark:text-sky-200">
+              가능 시간을 고친 뒤
+            </p>
+            <button
+              type="button"
+              disabled={saving || !sessionUser}
+              onClick={() => void onSave()}
+              className={BTN_SAVE_HERO}
+            >
+              {saving ? "저장 중…" : "가능 시간 저장"}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -759,12 +780,12 @@ export function App() {
               </p>
             </div>
           </div>
-          <div className="flex flex-col gap-2 sm:flex-row">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
             <button
               type="button"
               disabled={saving || !sessionUser}
               onClick={() => void onSave()}
-              className="min-h-[44px] flex-1 rounded-xl bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-sky-600 dark:hover:bg-sky-500 sm:py-2.5"
+              className={`${BTN_SAVE_HERO} sm:min-h-[50px]`}
             >
               {saving ? "저장 중…" : "가능 시간 저장"}
             </button>
@@ -772,7 +793,7 @@ export function App() {
               type="button"
               disabled={saving || !sessionUser}
               onClick={() => void onClearMine()}
-              className="min-h-[44px] rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700 hover:border-sky-300 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 sm:py-2.5"
+              className={BTN_CLEAR_OUTLINE}
             >
               내 행 삭제
             </button>
@@ -833,6 +854,26 @@ export function App() {
               {loading && (
                 <span className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">불러오는 중…</span>
               )}
+            </>
+          }
+          scheduleToolbar={
+            <>
+              <button
+                type="button"
+                disabled={saving || !sessionUser}
+                onClick={() => void onSave()}
+                className={`${BTN_SAVE_HERO} sm:min-h-[50px] sm:flex-[2]`}
+              >
+                {saving ? "저장 중…" : "가능 시간 저장"}
+              </button>
+              <button
+                type="button"
+                disabled={saving || !sessionUser}
+                onClick={() => void onClearMine()}
+                className={`${BTN_CLEAR_OUTLINE} sm:flex-1`}
+              >
+                내 행 삭제
+              </button>
             </>
           }
         />
@@ -916,6 +957,23 @@ export function App() {
           있습니다.)
         </p>
       </section>
+
+      <div
+        className="fixed inset-x-0 bottom-0 z-[80] border-t border-sky-200/90 bg-white/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-10px_36px_rgba(15,23,42,0.14)] backdrop-blur-md dark:border-slate-700 dark:bg-slate-950/92 dark:shadow-[0_-10px_36px_rgba(0,0,0,0.5)] md:hidden"
+        role="region"
+        aria-label="빠른 저장"
+      >
+        <div className="mx-auto max-w-7xl px-1">
+          <button
+            type="button"
+            disabled={saving || !sessionUser}
+            onClick={() => void onSave()}
+            className={BTN_SAVE_DOCK}
+          >
+            {saving ? "저장 중…" : "가능 시간 저장"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

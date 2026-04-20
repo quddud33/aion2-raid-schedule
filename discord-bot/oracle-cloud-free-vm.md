@@ -223,12 +223,50 @@ ssh -vvv -i "$env:USERPROFILE\.ssh\oci_raid_bot" opc@공인IP
 
 봇은 **Node 18+** 가 필요합니다. Oracle Linux 9에서 **20 LTS**를 쓰려면 NodeSource 예시가 무난합니다.
 
+**중요:** 아래 **첫 줄(`curl … | bash`)만** 실행하면 **저장소 설정만** 되고, **`node` / `npm` 은 아직 없습니다.** 반드시 **둘째 줄 `sudo dnf install -y nodejs`** 까지 끝내야 합니다.
+
 ```bash
+# ① NodeSource 저장소 등록 (끝나면 프롬프트로 돌아옴)
 curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
+
+# ② Node 패키지 설치 — 이걸 안 하면 `node: command not found` 가 납니다
 sudo dnf install -y nodejs
+
 node -v
 npm -v
 ```
+
+- ②에서 **오류·충돌 메시지**가 나오면 그대로 복사해 두었다가 확인합니다. (`--allowerasing` 이 필요한 경우도 드묽니다: `sudo dnf install -y nodejs --allowerasing`)  
+- **`dnf` 가 오래 멈춘 것처럼 보이면** (Micro 1GB에서 흔함): SSH를 **새로 연 뒤** `sudo pkill dnf`(필요 시)·`sudo rm -f /var/run/dnf.pid` 등으로 정리하고 **②만** 다시 실행해 보거나, 바로 아래 **§6-1 tarball** 절차를 씁니다.
+
+### 6-0. 설치됐는지 확인
+
+```bash
+rpm -q nodejs
+command -v node
+command -v npm
+```
+
+`rpm -q` 가 `package nodejs is not installed` 이면 **②를 아직 안 했거나 실패**한 것입니다.
+
+### 6-1. `dnf` 가 어려울 때 — 공식 tarball 로 Node 20
+
+`uname -m` 이 **`x86_64`** 일 때 예시(버전 숫자는 [Node 20 릴리스](https://nodejs.org/dist/latest-v20.x/)에서 `linux-x64` `.tar.xz` 이름에 맞춰 바꿉니다).
+
+```bash
+cd ~
+VER=20.19.5   # 예: 위 링크 디렉터리에서 최신 20.x 파일명에 맞게 수정
+curl -fsLO "https://nodejs.org/dist/v${VER}/node-v${VER}-linux-x64.tar.xz"
+tar -xJf "node-v${VER}-linux-x64.tar.xz"
+sudo rm -rf /opt/node20
+sudo mv "node-v${VER}-linux-x64" /opt/node20
+grep -q '/opt/node20/bin' ~/.bashrc || echo 'export PATH=/opt/node20/bin:$PATH' >> ~/.bashrc
+export PATH="/opt/node20/bin:$PATH"
+node -v
+npm -v
+```
+
+새 SSH 세션에서도 쓰려면 `source ~/.bashrc` 한 번 하거나 재접속합니다. (systemd `ExecStart` 에는 **`/opt/node20/bin/node`** 처럼 **전체 경로**를 쓰면 PATH에 의존하지 않아도 됩니다.)
 
 이미 `sudo dnf install nodejs` 로 깔려 있고 버전이 18 이상이면 그대로 써도 됩니다.
 
