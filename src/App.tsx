@@ -110,6 +110,7 @@ export function App() {
   const [canConfirmSchedule, setCanConfirmSchedule] = useState(false);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [importOtherRaidBusy, setImportOtherRaidBusy] = useState(false);
+  const [adminDeletingId, setAdminDeletingId] = useState<string | null>(null);
 
   const otherAionRaidType: AionRaidType | null =
     universe === "aion" ? (aionRaidType === "rudra" ? "bagot" : "rudra") : null;
@@ -483,6 +484,27 @@ export function App() {
     setMySlots(new Set());
     await loadRows();
   };
+
+  const onAdminDeleteRow = useCallback(
+    async (row: AvailabilityRow) => {
+      if (!supabase || !canConfirmSchedule || !sessionUser) return;
+      if (row.user_id === sessionUser.id) return;
+      const ok = window.confirm(`「${row.nickname}」님의 등록 행을 DB에서 삭제할까요? 이 작업은 되돌릴 수 없습니다.`);
+      if (!ok) return;
+      setAdminDeletingId(row.id);
+      setError(null);
+      const { error: re } = await supabase.rpc("delete_raid_availability_as_admin", {
+        p_row_id: row.id,
+      });
+      setAdminDeletingId(null);
+      if (re) {
+        setError(re.message);
+        return;
+      }
+      await loadRows();
+    },
+    [supabase, canConfirmSchedule, sessionUser, loadRows],
+  );
 
   const onImportSlotsFromOtherAionRaid = useCallback(async () => {
     if (!supabase || !otherAionRaidType) return;
@@ -895,6 +917,9 @@ export function App() {
                     (24h)
                   </span>
                 </th>
+                {canConfirmSchedule && sessionUser ? (
+                  <th className="w-px whitespace-nowrap py-2 pl-2 text-right font-medium normal-case">관리</th>
+                ) : null}
               </tr>
             </thead>
             <tbody>
@@ -927,11 +952,31 @@ export function App() {
                   <td className="py-2 text-xs text-slate-500 tabular-nums dark:text-slate-400">
                     {fmt24(new Date(r.updated_at))}
                   </td>
+                  {canConfirmSchedule && sessionUser ? (
+                    <td className="py-2 pl-2 text-right align-middle">
+                      {r.user_id !== sessionUser.id ? (
+                        <button
+                          type="button"
+                          disabled={adminDeletingId !== null || saving}
+                          title="이 참가자 행만 DB에서 삭제합니다 (관리자 전용)"
+                          onClick={() => void onAdminDeleteRow(r)}
+                          className="rounded-lg border border-rose-200 bg-white px-2 py-1 text-xs font-semibold text-rose-700 shadow-sm hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-900/60 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-950/50"
+                        >
+                          {adminDeletingId === r.id ? "삭제 중…" : "삭제"}
+                        </button>
+                      ) : (
+                        <span className="text-[11px] text-slate-400 dark:text-slate-500">—</span>
+                      )}
+                    </td>
+                  ) : null}
                 </tr>
               ))}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={3} className="py-6 text-center text-slate-500 dark:text-slate-400">
+                  <td
+                    colSpan={canConfirmSchedule && sessionUser ? 4 : 3}
+                    className="py-6 text-center text-slate-500 dark:text-slate-400"
+                  >
                     아직 등록된 일정이 없습니다.
                   </td>
                 </tr>
@@ -943,6 +988,14 @@ export function App() {
           표의 숫자는 해당 30분에 가능하다고 표시한 인원 수입니다. 상단 배지는 가능 시간을 적은 모든 인원의
           교집합입니다. (표는 당일 09:00–24:00만 다루며, 그 밖에 저장된 슬롯은 목록·교집합에는 그대로 나올 수
           있습니다.)
+          {canConfirmSchedule && sessionUser ? (
+            <>
+              {" "}
+              <span className="text-rose-700/90 dark:text-rose-300/90">
+                (일정 확정과 동일한 허용 계정만 타인 행 삭제 가능.)
+              </span>
+            </>
+          ) : null}
         </p>
       </section>
 
