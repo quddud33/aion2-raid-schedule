@@ -265,8 +265,10 @@ async function sendRemindAlarmMessage(alarm) {
       content: lines.join("\n"),
       allowedMentions: { users: [alarm.targetUserId, alarm.createdById].filter(Boolean) },
     });
+    console.log(`[알람 발송] 채널=${alarm.channelId} 대상=${alarm.targetUserId} (${alarm.labelKo ?? ""})`);
   } catch (e) {
-    console.error("[알람 전송 실패]", e?.message ?? e);
+    const code = e?.code ?? e?.status;
+    console.error("[알람 전송 실패]", code != null ? `code=${code}` : "", e?.message ?? e);
   }
 }
 
@@ -282,8 +284,23 @@ async function fireRemindAlarm(alarmId) {
 
 function scheduleRemindTimer(alarm) {
   const delay = Math.max(0, alarm.dueAt - Date.now());
-  const t = setTimeout(() => void fireRemindAlarm(alarm.id), delay);
+  console.log(
+    `[알람 예약] ${alarm.labelKo ?? "?"} ch=${alarm.channelId} id=${alarm.id} 약 ${(delay / 1000).toFixed(1)}s 후`,
+  );
+  const t = setTimeout(() => {
+    fireRemindAlarm(alarm.id).catch((e) => console.error("[알람 타이머]", e?.message ?? e));
+  }, delay);
   gAlarmTimers.set(alarm.id, t);
+}
+
+/** setTimeout 유실·크래시 복구용: 짧은 알람도 놓치지 않도록 주기적으로 스캔 */
+async function runRemindOverdueSweep() {
+  if (!gAlarmClient || gAlarmState.alarms.length === 0) return;
+  const now = Date.now();
+  const dueIds = gAlarmState.alarms.filter((a) => a.dueAt <= now).map((a) => a.id);
+  for (const id of dueIds) {
+    await fireRemindAlarm(id).catch((e) => console.error("[알람 스윕]", e?.message ?? e));
+  }
 }
 
 async function initRemindSystem(client) {
@@ -2035,6 +2052,11 @@ async function main() {
   }
 
   setInterval(tick, POLL_MS);
+  if (!once) {
+    setInterval(() => {
+      void runRemindOverdueSweep();
+    }, 5_000);
+  }
   console.log("[동작 중] 종료하려면 Ctrl+C");
 }
 
