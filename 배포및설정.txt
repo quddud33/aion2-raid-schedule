@@ -1,4 +1,4 @@
-아이온2 / 로스트아크(익기르 나메) 공용 일정 — GitHub Pages + Supabase 설정
+아이온2 / 로스트아크(하위 에기르 나메) 공용 일정 — GitHub Pages + Supabase 설정
 
 
 
@@ -126,7 +126,31 @@
 
 3) GitHub Pages (Actions 빌드)
 
-   - 저장소 Settings → Secrets and variables → Actions
+   **GitHub에 시크릿 넣는 방법** (저장소 웹에서)
+
+   1. GitHub에서 해당 **저장소** 페이지를 엽니다.
+
+   2. 상단 **Settings**(설정) 탭을 클릭합니다.
+
+   3. 왼쪽 메뉴 **Secrets and variables** → **Actions** 를 선택합니다.
+
+   4. **New repository secret** 버튼으로 하나씩 추가합니다.
+
+      - Name(이름) 칸과 Secret(값) 칸에 아래 표와 같이 넣습니다. 이름은 **대소문자·철자 그대로**여야 합니다.
+
+      - 필수: `VITE_SUPABASE_URL` , `VITE_SUPABASE_ANON_KEY` (Supabase 대시보드에서 복사한 값)
+
+      - 선택: `VITE_BASE` — 비우면 워크플로가 자동으로 `/<저장소이름>/` 를 씁니다. 사용자 페이지처럼 루트가 `/` 면
+
+        Name `VITE_BASE` , Secret `/` (슬래시 하나)
+
+      - 선택: `VITE_LOSTARK_ENTRY_PATH` — 예: Name 그대로, Secret 에 `lostark` 만 (따옴표 없이)
+
+      - 선택: `VITE_LOSTARK_ENTRY_HASH` — 예: Secret 에 `#/lostark` 정확히
+
+   5. 저장 후 **main**(또는 **master**)에 푸시하면 Actions 가 빌드할 때 위 값이 주입됩니다.
+
+   (요약) Settings → Secrets and variables → Actions → New repository secret
 
      - VITE_SUPABASE_URL
 
@@ -160,7 +184,7 @@
 
 
 
-5) 로스트아크(익기르 나메) 탭 — 어떻게 접근하나요?
+5) 로스트아크 탭 — 어떻게 접근하나요?
 
    - 빌드·배포 시 `.env` 또는 GitHub Actions 시크릿에 **둘 중 하나 이상**을 넣습니다. (`.env.example` 참고)
 
@@ -172,9 +196,9 @@
 
    - **해시로 입장** 예: `https://내계정.github.io/저장소이름/#/lostark`
 
-   - 위 조건으로 들어온 브라우저에서만 헤더에「아이온2 | 익기르 나메」전환이 보이고, DB의 `raid_type=lostark`
+   - 위 조건으로 들어온 브라우저에서만 헤더에「아이온2 | 로스트아크」전환이 보입니다. 로스트아크 쪽 화면에서는
 
-     슬롯과 연결됩니다. (UI 표시명은 익기르 나메, 저장 값은 `lostark` 그대로입니다.)
+     하위 레이드 **에기르 나메** 일정을 맞추며, DB 저장 값은 `raid_type=lostark` 입니다.
 
    - `VITE_LOSTARK_ENTRY_PATH` 와 `VITE_LOSTARK_ENTRY_HASH` 를 **둘 다 비우면** 아이온2(루드라/바고트)만 제공됩니다.
 
