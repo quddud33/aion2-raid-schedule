@@ -226,6 +226,8 @@
 
      등)에서 Supabase로 확정 슬롯과 참가자(`raid_availability`에 확정 slot 포함 + `discord_id`)를 읽고 Discord API로
 
-     채널에 `<@snowflake>` 멘션을 포함한 메시지를 내면 됩니다. 개요는 `discord-bot/README.md` 를 참고하세요.
+     채널에 `<@snowflake>` 멘션을 포함한 메시지를 내면 됩니다. **처음부터 단계별 설정**은 `discord-bot/README.md`
+
+     와 같은 폴더의 `index.mjs`·`.env.example` 을 참고하세요.
 
 
