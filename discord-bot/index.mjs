@@ -269,9 +269,22 @@ async function sendRemindAlarmMessage(alarm) {
     return false;
   }
   try {
-    const ch = await gAlarmClient.channels.fetch(alarm.channelId);
+    let ch = await gAlarmClient.channels.fetch(alarm.channelId, { force: true }).catch(() => null);
+    if ((!ch || !ch.isTextBased?.()) && alarm.guildId) {
+      const guild = await gAlarmClient.guilds.fetch(alarm.guildId).catch(() => null);
+      if (guild) {
+        ch = await guild.channels.fetch(alarm.channelId, { force: true }).catch(() => null);
+      }
+    }
     if (!ch?.isTextBased?.()) {
-      console.warn(`[알람] 채널을 열 수 없음: ${alarm.channelId}`);
+      console.warn(`[알람] 채널을 열 수 없음(캐시/API): ${alarm.channelId} guild=${alarm.guildId ?? "?"}`);
+      return false;
+    }
+    const me = ch.guild?.members?.me;
+    if (me && ch.permissionsFor?.(me) && !ch.permissionsFor(me).has(PermissionFlagsBits.SendMessages)) {
+      console.error(
+        `[알람] 이 채널에 메시지 보내기 권한 없음: ${alarm.channelId} — 서버 설정에서 봇 역할에「메시지 보내기」허용`,
+      );
       return false;
     }
     const label = typeof alarm.labelKo === "string" && alarm.labelKo ? alarm.labelKo : "알람";
@@ -320,6 +333,7 @@ async function fireRemindAlarm(alarmId) {
 }
 
 function scheduleRemindTimer(alarm) {
+  clearRemindTimer(alarm.id);
   const delay = Math.max(0, alarm.dueAt - Date.now());
   console.log(
     `[알람 예약] ${alarm.labelKo ?? "?"} ch=${alarm.channelId} id=${alarm.id} 약 ${(delay / 1000).toFixed(1)}s 후`,
@@ -2091,6 +2105,7 @@ async function main() {
       }
       state = await runTick(client, supabase, state);
       state = await runSugoMerchantTick(client, supabase, state);
+      await runRemindOverdueSweep().catch((e) => console.error("[알람 스윕]", e?.message ?? e));
     } catch (e) {
       console.error("[틱 오류]", e?.message ?? e);
     }
