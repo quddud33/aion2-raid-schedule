@@ -1,6 +1,6 @@
 # 출발 알림 Discord 봇 — 처음부터 설정하기
 
-웹앱은 **일정 확정**과 참가자 `discord_id` 저장까지만 합니다. **레이드 24시간 전·30분 전**에 디스코드 채널로 멘션을 내려면, 아래처럼 **별도로 이 봇 프로그램**을 한 대의 PC·서버에서 계속 실행해야 합니다.
+웹앱은 **일정 확정**과 참가자 `discord_id` 저장까지만 합니다. **확정 슬롯 당일 06:00(로컬)·출발 30분 전**에 디스코드 채널로 멘션을 내려면, 아래처럼 **별도로 이 봇 프로그램**을 한 대의 PC·서버에서 계속 실행해야 합니다. (당일 시각은 `.env`의 `REMIND_DAY_HOUR`로 바꿀 수 있습니다.)
 
 > **중요:** `SUPABASE_SERVICE_ROLE_KEY`와 `DISCORD_BOT_TOKEN`은 **절대** GitHub에 올리거나 웹(React) 코드에 넣지 마세요. 봇만 아는 환경 변수(`.env`)로만 씁니다.
 
@@ -17,7 +17,7 @@
 
 1. **디스코드 서버** — 알림을 받을 길드(서버)가 있어야 합니다.  
 2. **Supabase 프로젝트** — 웹 일정 앱과 같은 프로젝트.  
-3. **DB 마이그레이션** — `raid_schedule_confirmation`, `discord_id` 등이 들어간 `20260218150000_raid_schedule_confirmation.sql` 이 이미 적용된 상태여야 합니다.  
+3. **DB 마이그레이션** — `raid_schedule_confirmation`, `discord_id` 등(`20260218150000_…`)과, 디스코드에서 채널을 고르려면 **`20260420180000_discord_reminder_channel_config.sql`** 까지 적용된 상태여야 합니다.  
 4. **PC에 Node.js 18+** — [https://nodejs.org](https://nodejs.org) LTS 설치.
 
 ---
@@ -37,12 +37,12 @@
 ## 2. 봇을 서버에 초대하기
 
 1. Developer Portal에서 해당 앱 → 왼쪽 **OAuth2** → **URL Generator**.  
-2. **SCOPES:** `bot` 체크.  
+2. **SCOPES:** **`bot`** 과 **`applications.commands`** 를 둘 다 체크합니다. (`applications.commands` 가 없으면 `/raid_notify` 슬래시 명령이 서버에 안 보일 수 있습니다.)  
 3. **BOT PERMISSIONS:** 최소한  
    - **Send Messages**  
    - **Embed Links** (선택)  
    - 멘션을 확실히 하려면 **Mention Everyone** 는 필요 없습니다. `<@userid>` 멘션만 씁니다.  
-4. 아래에 생성된 **URL**을 복사해 브라우저 주소창에 붙여 넣고, 알림을 받을 **디스코드 서버**를 선택해 초대합니다.
+4. 아래에 생성된 **URL**을 복사해 브라우저 주소창에 붙여 넣고, 알림을 받을 **디스코드 서버**를 선택해 초대합니다. (이미 초대했다면 **같은 SCOPES로 URL을 다시 만들어** 한 번 더 초대해도 됩니다.)
 
 ---
 
@@ -50,7 +50,26 @@
 
 1. Discord **설정** → **고급** → **개발자 모드** 켜기.  
 2. 알림을 보내고 싶은 **텍스트 채널**에서 우클릭 → **채널 ID 복사**.  
-3. 숫자만 복사된 값이 `DISCORD_CHANNEL_ID` 입니다.
+3. 숫자만 복사된 값이 `.env`의 **`DISCORD_CHANNEL_ID`** 입니다.  
+   - **어느 채널에 쓰이나요?** 기본은 **이 ID 한 곳**에만 메시지가 갑니다 (`rudra` / `bagot` / `lostark` 모두 동일 채널).  
+   - 레이드마다 나누려면 `.env`에 **`DISCORD_CHANNEL_ID_RUDRA`**, **`DISCORD_CHANNEL_ID_BAGOT`**, **`DISCORD_CHANNEL_ID_LOSTARK`** 를 각각 넣으면, 해당 타입만 그 채널로 갑니다. (엔트리가 없는 타입은 여전히 `DISCORD_CHANNEL_ID` 사용.)
+   - **디스코드만으로 바꾸고 싶다면** 아래 **§2A** 의 `/raid_notify` 를 쓰면 됩니다. (DB에 저장되며, **저장된 값이 `.env`보다 우선**합니다.)
+
+---
+
+## 2A. 디스코드에서 알림 채널 지정 (`/raid_notify`)
+
+Supabase에 테이블 `discord_reminder_channel_config` 가 있어야 합니다(SQL Editor에 `supabase/migrations/20260420180000_discord_reminder_channel_config.sql` 실행 또는 CLI 마이그레이션).
+
+1. 봇을 **§2**처럼 `applications.commands` 포함해 서버에 넣습니다.  
+2. `.env`에 **`DISCORD_GUILD_ID`**(서버 ID, 개발자 모드로 복사)를 넣으면 슬래시 명령이 **즉시** 등록됩니다. 비우면 **글로벌** 등록이라 반영까지 **최대 수십 분** 걸릴 수 있습니다.  
+3. 서버에서 **서버 관리(Manage Server)** 권한이 있는 계정으로:
+
+   - `/raid_notify set` — `target`(전체 기본 / 루드라 / 바고트 / 로스트아크) + `channel`(텍스트 채널)  
+   - `/raid_notify status` — DB에 저장된 채널 요약  
+   - `/raid_notify clear` — DB 값 삭제(해당 항목은 다시 `.env` 기준)
+
+**우선순위(높은 것 먼저):** DB 타입별 채널 → `.env`의 `DISCORD_CHANNEL_ID_*` → DB 기본 → `.env`의 `DISCORD_CHANNEL_ID`.
 
 ---
 
@@ -88,15 +107,21 @@
 5. 메모장 등으로 `.env` 를 열고 다음을 채웁니다.
 
    - `DISCORD_BOT_TOKEN` — 1절에서 복사한 봇 토큰  
-   - `DISCORD_CHANNEL_ID` — 3절 채널 ID  
+   - `DISCORD_CHANNEL_ID` — 3절 **기본** 채널 ID (루드라·바고트·로아 공통, 또는 타입별 ID를 안 넣을 때)  
+   - (선택) `DISCORD_CHANNEL_ID_RUDRA` / `DISCORD_CHANNEL_ID_BAGOT` / `DISCORD_CHANNEL_ID_LOSTARK` — 타입별 채널  
+   - (선택) `DISCORD_GUILD_ID` — 서버 ID. 넣으면 `/raid_notify` 슬래시 명령이 바로 보임  
    - `SUPABASE_URL` — Supabase Project URL  
    - `SUPABASE_SERVICE_ROLE_KEY` — service_role secret  
-   - `REMIND_TZ=Asia/Seoul` — 한국에서 쓰면 그대로 두면 됩니다.
+   - `REMIND_TZ=Asia/Seoul` — 한국에서 쓰면 그대로 두면 됩니다.  
+   - (선택) `REMIND_DAY_HOUR=6` — 출발 **당일** 아침 알림 시각(0~23). 생략 시 `6`(06:00).
 
-6. (선택) 로스트아크 일정만 알리려면 한 줄 추가:
+6. (선택) 알릴 **레이드 종류** 제한:
 
    ```env
+   # 비우면 rudra · bagot · lostark 확정 일정이 모두 알림 대상
    REMINDER_RAID_TYPE=lostark
+   # 아이온 루드라+바고트만 (로아 제외)
+   REMINDER_RAID_TYPE=rudra,bagot
    ```
 
 7. **한 번만 테스트** (지금 시각에 맞는 알림이 없어도 오류 없이 끝나면 성공에 가깝습니다):
@@ -172,10 +197,10 @@
 
 ## 6. 동작 방식 (이 예제 `index.mjs`)
 
-1. **1분마다** Supabase에서 `raid_schedule_confirmation` 전체를 읽습니다.  
+1. **1분마다** Supabase에서 `raid_schedule_confirmation` 전체를 읽고, 알림 채널은 `discord_reminder_channel_config`(있으면)과 `.env`를 합쳐 결정합니다.  
 2. 각 행의 `slot_key`를 **한국(또는 `REMIND_TZ`) 로컬 날짜·시각**으로 바꿉니다.  
-3. 그 시각 기준 **정확히 24시간 전**·**정확히 30분 전**에 들어오는 **약 90초 창** 안에 들어오면, 지정 채널에 메시지를 보냅니다.  
-4. 같은 알림을 두 번 보내지 않도록 `sent-reminders.json` 에 플래그를 저장합니다. (파일 삭제 시 다시 보낼 수 있으니 주의)  
+3. **출발 당일** `REMIND_DAY_HOUR` 시(기본 6 → 06:00, `REMIND_TZ` 로컬)와 **출발 30분 전** 시각에 들어오는 **약 90초 창** 안이면, 지정 채널에 메시지를 보냅니다. 출발이 그날 `REMIND_DAY_HOUR`보다 이르면(예: 새벽 레이드) 당일 알림은 생략되고 **30분 전**만 갑니다.  
+4. 같은 알림을 두 번 보내지 않도록 `sent-reminders.json` 에 플래그를 저장합니다. (`:dDay`, `:d30` 키. 예전 `:d24` 는 더 이상 쓰이지 않습니다. 파일 삭제 시 다시 보낼 수 있으니 주의)  
 5. 멘션 대상: 같은 `raid_type`의 `raid_availability` 중, `slots` 배열에 **확정된 `slot_key`가 포함**된 행의 `discord_id`.  
    - `discord_id`가 비어 있으면 웹에서 **「가능 시간 저장」**을 한 번 더 해서 채워야 멘션이 됩니다.
 
@@ -205,6 +230,7 @@
 | 멘션이 안 됨 | 해당 유저가 `discord_id` 없이 저장됐을 수 있습니다. 웹에서 저장 다시. |
 | 시간이 9시간 어긋남 | `.env`에 `REMIND_TZ=Asia/Seoul` 이 있는지, 봇을 돌리는 PC/OS 타임존을 확인합니다. |
 | Supabase 오류 | 마이그레이션 적용 여부, `service_role` 키 오타, URL 오타. |
+| `/raid_notify` 가 안 보임 | 초대 URL에 **`applications.commands`** 포함, `DISCORD_GUILD_ID` 후 봇 재시작, 마이그레이션 `20260420180000` 적용 여부. |
 
 ---
 
@@ -218,7 +244,7 @@
 
 ## 9. 다음 단계 (원할 때)
 
-- 여러 채널·레이드 타입별 채널: `index.mjs`를 수정해 `raid_type`에 따라 `CHANNEL_ID`를 매핑합니다.  
+- 여러 채널: **§2A `/raid_notify`** 또는 `.env`의 `DISCORD_CHANNEL_ID_RUDRA` 등(§3·`.env.example`).  
 - 알림 문구·역할 멘션(`<@&roleid>`): 메시지 문자열만 바꾸면 됩니다.  
 - GitHub Actions `schedule` 만으로는 **매 분 정확한 알림**이 어려울 수 있어, 상시 프로세스를 권장합니다.
 

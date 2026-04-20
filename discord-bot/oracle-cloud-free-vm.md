@@ -99,6 +99,121 @@ ssh-keygen -t rsa -b 4096 -f "$env:USERPROFILE\.ssh\oci_raid_bot"
 
 ---
 
+## 3-2. Always Free에서 RAM을 늘리는 방법 (자세히)
+
+**전제:** `VM.Standard.E2.1.Micro` 는 **RAM 1GB 고정**입니다. 무료여도 메모리는 늘지 않습니다.  
+RAM을 늘리려면 **(1) 다른 무료 Shape 쓰기**, **(2) 같은 1GB에 스왑 추가**, **(3) `dnf` 대신 tarball** 중에서 고르면 됩니다.
+
+### A. Ampere A1 Flex로 새 VM 만들기 (무료 한도 안에서 RAM 4~6GB)
+
+Oracle **Always Free**에는 **Ampere A1 Compute** 할당이 따로 있습니다. `VM.Standard.A1.Flex` 는 **OCPU 개수와 메모리(GB)를 슬라이더로** 정합니다.  
+**E2.1 Micro(x86, 1GB)** 와 **CPU 아키텍처가 다릅니다** → **새 인스턴스**를 만들고 **ARM64(aarch64)** 이미지를 고릅니다. (기존 VM에서 “Shape만 변경”으로 바꾸는 것은 **거의 불가**입니다.)
+
+#### A-0. 시작 전에
+
+1. **[Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)** 에서 **Ampere A1** 무료 한도(월 OCPU·GB 시간, 홈 리전 등)를 한 번 확인합니다.  
+2. **E2 VM에만 있는 것**을 백업합니다. (로컬 PC에서 예시)
+
+   ```powershell
+   scp -i $env:USERPROFILE\.ssh\oci_raid_bot opc@예전E2공인IP:/home/opc/aion2-raid-schedule/discord-bot/.env C:\backup\discord-bot.env
+   ```
+
+   또는 VM 안에서 `cat` 해서 메모장에 복사해 둡니다. **`.env`는 Git에 올리지 마세요.**
+
+3. 새 VM이 정상 동작한 뒤에만, 예전 E2 인스턴스를 **Stop** 또는 **Terminate** 합니다. (무료 VM 개수·한도에 따라 **둘 다 켜 두면** 제한에 걸릴 수 있습니다.)
+
+#### A-1. OCI 콘솔 — A1 Flex + 메모리 4~6GB (단계별)
+
+화면 이름은 콘솔 업데이트로 조금 다를 수 있습니다. **핵심은 “ARM 이미지 + A1.Flex + 메모리 슬라이더 + Always Free 표시”** 입니다.
+
+1. 상단 리전이 **E2를 만들었던 홈 리전**과 같은지 확인합니다. (다르면 A1 무료 한도가 따로일 수 있음.)
+2. **Compute** → **Instances** → **Create instance**.
+3. **Name:** 예: `raid-bot-a1` (구분만 되면 됨).
+4. **Placement:** 기본 가용 영역(AD) 유지.
+5. **Image and shape** (또는 **Image** / **Change image**):
+   - **Change image** 로 들어가 **Platform images** 에서 **Oracle Linux 9** 를 고릅니다.  
+   - **아키텍처 확인 방법 (콘솔):**
+     - **Shape를 먼저 `A1.Flex`로 바꾼 뒤** 이미지를 고르면, 목록이 **ARM 전용**으로 필터되는 경우가 많습니다. (그럼 잘못 고를 확률이 줄어듭니다.)
+     - 이미지 선택 창에 **Architecture**, **Processor type**, **aarch64**, **ARM 64-bit** 같은 **열·필터·배지**가 있으면 그 값이 **aarch64 / ARM64** 인 행만 고릅니다.
+     - 표에 **x86_64**, **64-bit AMD** 만 보이면 **아직 x86용 목록**일 수 있으니, **Shape를 A1 Flex로 바꿨는지** 다시 확인합니다.
+     - 한 줄 요약: **A1 Flex + Oracle Linux 9** 조합에서, 화면에 아키텍처가 나오면 **ARM/aarch64** 만 선택합니다.
+   - **최종 확인(가장 확실):** 인스턴스 생성 후 SSH로 들어가 `uname -m` 을 칩니다. **`aarch64`** 가 나오면 맞습니다. **`x86_64`** 면 이미지/템플릿을 잘못 고른 것이므로, 인스턴스를 지우고 **ARM 이미지**로 다시 만듭니다.
+6. **Shape** → **Change shape** → **Browse all shapes** (또는 유사 메뉴):
+   - **Shape series**(또는 상단 타일)에서 **`Specialty and previous generation`** 만 선택되어 있으면 **E2 Micro·Intel·AMD** 같은 **x86** 목록만 나옵니다.  
+   - 반드시 **`Ampere`** 타일을 누릅니다. (설명에 **Arm-based processor** 가 붙어 있는 시리즈입니다.)  
+   - 그다음 아래 목록에서 **`VM.Standard.A1.Flex`** 를 고릅니다. (여기서 **Always Free-eligible** 표시가 나오는지 확인합니다.)  
+   - **Ampere** 를 눌렀는데도 A1이 안 보이면: 리전·가용 영역(AD)에 **용량이 없거나**, 테넌시에 Ampere 무료 한도가 없을 수 있습니다. 다른 AD/리전을 시도하거나 [Always Free 문서](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)·OCI 지원을 확인합니다.
+
+#### A-1a. `VM.Standard.A1.Flex` 용량 부족(AD-1 등) 오류
+
+다음과 같은 메시지가 나오면 **그 가용성 도메인(AD)에 A1 물리 용량이 일시적으로 없는 것**입니다.
+
+> 가용성 도메인 AD-1에서 VM.Standard.A1.Flex 형태의 인스턴스 용량이 부족합니다. 다른 가용성 도메인에…
+
+영문 API 예시:
+
+> `Out of capacity for shape VM.Standard.A1.Flex in availability domain AD-1` … Create the instance in a **different availability domain** or try again later.
+
+**대응 순서:**
+
+1. **Placement** / **Availability domain** 을 **AD-2** 로 바꿔 **Create** → 또 실패하면 **AD-3** … 리전에 있는 **모든 AD**를 순서대로 시도합니다. (콘솔에서 드롭다운에 나오는 AD만 해당.)
+2. **Fault domain** 은 이미 **Let Oracle choose** 면 그대로 두고, **직접 골랐다면** 자동 선택으로 바꿉니다.
+3. **리전 전체에서 A1이 계속 안 잡히면:**  
+   - **몇 시간~며칠 뒤** 같은 리전에서 다시 시도 (용량 풀림은 Oracle 쪽 스케줄).  
+   - 또는 **다른 홈 리전**에서 새 VCN + A1 인스턴스 생성 (지연·네트워크는 본인이 감수).  
+   - **Paid capacity** / 유료 용량 예약은 무료만 쓰려면 **선택하지 않습니다.**
+4. A1이 당분간 불가능하면 **E2 Micro + 스왑 + tarball(§6·§3-2 B/C)** 로 봇만 먼저 올리는 현실적인 우회가 있습니다.
+
+#### A-1b. `Estimated cost` 에 부트 볼륨 $/월이 보일 때
+
+인스턴스 만들기 **Review** 단계에 **Estimated cost** 가 나오고, **Boot volume** 에 월 **몇 달러**가 찍혀도 **당장 “유료 확정”은 아닐 수 있습니다.**
+
+- 콘솔 견적은 **표준 단가 기준**이고, **Always Free·크레딧**을 **견적에 완전히 반영하지 않는 경우**가 많습니다. **Compute가 `Always Free-eligible`** 이고 **부트 볼륨 크기가 무료 한도 안**이면, 실제 청구는 **$0**에 가깝게 나오는 경우가 많습니다. (정책·테넌시 종류는 **[Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)** 가 기준입니다.)
+- **확인:** Review에서 **Compute** 행에도 무료/자격 안내가 있는지, 부트 볼륨 **GB**가 과하게 크지 않은지(기본 50GB 전후가 흔함) 봅니다.
+- **불안하면:** **Budget·알림**을 켜 두고, 생성 후 **Cost Analysis** 로 며칠 뒤 실제 소비를 확인합니다.
+- **Compute가 무료 자격이 아니면** 부트 볼륨 포함 **견적대로 유료**될 수 있으므로, **`Always Free-eligible` 없음 + 유료 경고**면 생성을 멈추고 Shape·한도를 다시 확인합니다.
+   - **Show advanced options** / 세부가 있으면 열어 **OCPU** 와 **Memory in GB** 슬라이더를 조절합니다.
+   - **목표 예시:** **OCPU 1**, **Memory 4 GB** 또는 **6 GB**. (슬라이더가 OCPU에 따라 허용 범위를 제한할 수 있습니다. 4~6GB가 안 되면 **한도 안에서 가능한 최대 메모리**로 올립니다.)
+   - 화면 어딘가에 **Always Free eligible** / 무료 자격 / 한도 안이라는 **녹색·안내 문구**가 있는지 확인합니다. **과금 경고**가 뜨면 슬라이더를 줄이거나 한도 문서를 다시 확인합니다.  
+   - **`Always Free-eligible` 배지가 안 보이면:** 서브 창만 그럴 수도 있지만, **무료만 쓰겠다면 “배지 없음 = 무료”로 가정하지 마세요.** **Review** 단계·요금 안내에 **유료(종량제)** 경고가 없는지 꼭 확인합니다. 유료 Shape/OCPU·RAM을 쓰면 **청구**될 수 있습니다. (정책은 **[Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)** 가 기준입니다.)
+7. **Networking:** 기존 E2와 같이 **같은 VCN** + **퍼블릭 서브넷** + **퍼블릭 IPv4 할당 예** 를 선택합니다. (새 VCN을 또 만들 필요는 보통 없습니다.)
+8. **Add SSH keys:** 예전과 동일하게 **Paste public keys** 에 `oci_raid_bot.pub` 한 줄을 넣습니다.
+9. **Boot volume:** 기본값(약 50GB)으로도 무료 한도 안인지 콘솔 안내를 확인합니다.
+10. **Create** → **RUNNING** 이 되면 인스턴스 상세에서 **Public IP** 를 확인합니다. (E2 때와 **IP가 다릅니다.**)
+
+#### A-2. SSH 접속 (ARM도 사용자는 보통 `opc`)
+
+```powershell
+ssh -o GSSAPIAuthentication=no -i "$env:USERPROFILE\.ssh\oci_raid_bot" opc@새공인IP
+```
+
+접속 후 확인:
+
+```bash
+uname -m
+# aarch64 가 나와야 합니다.
+free -h
+```
+
+#### A-3. Node·봇 (ARM)
+
+- **§6-1 tarball** 에서 **`ARCH=arm64`**, 파일명 **`linux-arm64`** 를 사용합니다. (`VER` 는 [latest-v20.x](https://nodejs.org/dist/latest-v20.x/) 에 맞춤.)  
+- **§7·§8·§10** 은 E2 때와 동일하되, `systemd` 의 `ExecStart` 는 **`/opt/node20/bin/node`** 처럼 **실제 경로**로 맞춥니다.
+
+#### A-4. 예전 E2 인스턴스
+
+봇이 새 VM에서 잘 돌아가는 것을 확인한 뒤, **Compute → Instances** 에서 예전 E2 인스턴스를 **Terminate** 하면 IP·자원이 정리됩니다. (아직 비교가 필요하면 **Stop** 만 해 두어도 됩니다.)
+
+### B. E2 Micro 유지 + 스왑(Swap) 추가 (디스크 여유 필요)
+
+RAM은 1GB 그대로지만, **디스크 일부를 가상 메모리**로 써서 `dnf` 가 OOM으로 `Killed` 나는 일을 줄입니다. §6의 **스왑 예시 명령**을 참고합니다. (부트 볼륨 여유가 있어야 합니다.)
+
+### C. E2 Micro 유지 + Node는 tarball (§6-1)
+
+`dnf` 를 거의 쓰지 않아 **메모리 부담이 적습니다.** x86_64 tarball 절차는 §6-1에 있습니다.
+
+---
+
 ## 4. 컴퓨트 인스턴스 만들기
 
 1. **Compute** → **Instances** → **Create instance**.  
@@ -239,7 +354,21 @@ npm -v
 **정상일 때:** ②를 치면 곧바로(또는 잠시 뒤) 터미널에 **메타데이터 확인·패키지 목록·다운로드 진행률·`Installing/Complete`** 같은 줄들이 **계속 올라옵니다.** 아무 글자도 없이 **몇 분째 멈춘 것처럼** 보이면, Micro VM(1GB)에서 **메모리 부족·다른 `dnf` 잠금·느린 미러**일 수 있습니다. 다른 SSH 창에서 `ps aux | grep dnf` 로 잠금 여부를 보거나, 더 자세한 로그는 `sudo dnf install -y nodejs -v` 로 시도해 볼 수 있습니다.
 
 - ②에서 **오류·충돌 메시지**가 나오면 그대로 복사해 두었다가 확인합니다. (`--allowerasing` 이 필요한 경우도 드묽니다: `sudo dnf install -y nodejs --allowerasing`)  
-- **`dnf` 가 오래 멈춘 것처럼 보이면** (Micro 1GB에서 흔함): SSH를 **새로 연 뒤** `sudo pkill dnf`(필요 시)·`sudo rm -f /var/run/dnf.pid` 등으로 정리하고 **②만** 다시 실행해 보거나, 바로 아래 **§6-1 tarball** 절차를 씁니다.
+- **`dnf` 가 오래 멈춘 것처럼 보이면** (Micro 1GB에서 흔함): SSH를 **새로 연 뒤** `sudo pkill dnf`(필요 시)·`sudo rm -f /var/run/dnf.pid` 등으로 정리하고 **②만** 다시 실행해 보거나, 바로 아래 **§6-1 tarball** 절차를 씁니다.  
+- **`Killed` 한 줄만** 나오고 종료되면: 설치 스크립트가 “터진” 것이 아니라, **메모리 부족(OOM Killer)** 이 `dnf` 를 죽인 경우가 대부분입니다. (Always Free **E2.1 Micro 1GB** 에서 자주 발생.) 확인: `sudo dmesg -T | tail -20` 근처에 `Out of memory: Killed process` / `dnf` 가 보이는지 봅니다.  
+  - **대응 1 — 스왑 추가 후 다시 ②:** 예시(2G 스왑, 디스크 여유 필요):
+
+    ```bash
+    sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+    free -h
+    sudo dnf install -y nodejs
+    ```
+
+  - **대응 2:** 아래 **§6-1 tarball** 로 설치(`dnf` 거의 안 씀).
 
 ### 6-0. 설치됐는지 확인
 
@@ -253,15 +382,20 @@ command -v npm
 
 ### 6-1. `dnf` 가 어려울 때 — 공식 tarball 로 Node 20
 
-`uname -m` 이 **`x86_64`** 일 때 예시(버전 숫자는 [Node 20 릴리스](https://nodejs.org/dist/latest-v20.x/)에서 `linux-x64` `.tar.xz` 이름에 맞춰 바꿉니다).
+`uname -m` 으로 아키텍처를 확인한 뒤, [Node 20 릴리스](https://nodejs.org/dist/latest-v20.x/)에서 같은 버전의 **`linux-x64`** 또는 **`linux-arm64`** `.tar.xz` 를 고릅니다.
+
+- **E2 Micro (x86_64)** → `linux-x64` (아래 예시).  
+- **§3-2 의 A1 Flex (aarch64)** → 파일명이 `linux-arm64` 인 tarball.
 
 ```bash
 cd ~
 VER=20.19.5   # 예: 위 링크 디렉터리에서 최신 20.x 파일명에 맞게 수정
-curl -fsLO "https://nodejs.org/dist/v${VER}/node-v${VER}-linux-x64.tar.xz"
-tar -xJf "node-v${VER}-linux-x64.tar.xz"
+# x86_64(E2)면 x64, aarch64(A1)면 arm64
+ARCH=x64
+curl -fsLO "https://nodejs.org/dist/v${VER}/node-v${VER}-linux-${ARCH}.tar.xz"
+tar -xJf "node-v${VER}-linux-${ARCH}.tar.xz"
 sudo rm -rf /opt/node20
-sudo mv "node-v${VER}-linux-x64" /opt/node20
+sudo mv "node-v${VER}-linux-${ARCH}" /opt/node20
 grep -q '/opt/node20/bin' ~/.bashrc || echo 'export PATH=/opt/node20/bin:$PATH' >> ~/.bashrc
 export PATH="/opt/node20/bin:$PATH"
 node -v
