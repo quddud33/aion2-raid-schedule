@@ -492,14 +492,16 @@ npm start
    Type=simple
    User=opc
    WorkingDirectory=/home/opc/aion2-raid-schedule/discord-bot
-   EnvironmentFile=/home/opc/aion2-raid-schedule/discord-bot/.env
-   ExecStart=/usr/bin/node /home/opc/aion2-raid-schedule/discord-bot/index.mjs
+   ExecStart=/bin/bash -lc 'cd /home/opc/aion2-raid-schedule/discord-bot && exec node index.mjs'
    Restart=always
    RestartSec=15
 
    [Install]
    WantedBy=multi-user.target
    ```
+
+   - **터미널에서 되던 그대로** `bash -lc` 안에 `cd` + `node index.mjs` (또는 `npm start`)만 넣으면 됩니다. **절대 경로로 `node`를 적을 필요 없음** — 로그인 셸과 비슷한 `PATH`가 잡힙니다.  
+   - **`EnvironmentFile=` 는 넣지 마세요.** `index.mjs` 가 `dotenv` 로 **WorkingDirectory** 안의 `.env` 를 읽습니다. `EnvironmentFile` 로 홈 아래 `.env` 를 지정하면 Oracle Linux 등에서 systemd가 `Permission denied` 로 실패할 수 있습니다.
 
 3. 적용 및 시작:
 

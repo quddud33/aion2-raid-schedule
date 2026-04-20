@@ -260,6 +260,7 @@ Supabase에 테이블 `discord_reminder_channel_config` 가 있어야 합니다(
 | 시간이 9시간 어긋남 | `.env`에 `REMIND_TZ=Asia/Seoul` 이 있는지, 봇을 돌리는 PC/OS 타임존을 확인합니다. |
 | Supabase 오류 | 마이그레이션 적용 여부, `service_role` 키 오타, URL 오타. |
 | `/raid_notify` 가 안 보임 | 초대 URL에 **`applications.commands`** 포함, 봇 **재시작** 후 잠시 대기, 마이그레이션 `20260420180000` 적용 여부. (서버에 봇이 실제로 들어가 있어야 길드 등록이 됩니다.) |
+| systemd `Failed to load environment files: Permission denied` | 유닛에서 **`EnvironmentFile=` 줄을 제거**하세요. 봇은 `dotenv`로 `WorkingDirectory`의 `.env`를 읽습니다. (`oracle-cloud-free-vm.md` 10절 예시 참고) |
 
 ---
 

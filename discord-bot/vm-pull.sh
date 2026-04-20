@@ -49,8 +49,18 @@ npm install
 
 if [[ -f "/etc/systemd/system/$UNIT" ]] || [[ -f "/lib/systemd/system/$UNIT" ]]; then
   echo "==> systemctl restart $UNIT"
-  sudo systemctl restart "$UNIT"
-  sudo systemctl is-active --quiet "$UNIT" && echo "==> $UNIT: active" || echo "==> 경고: systemctl status $UNIT"
+  if sudo systemctl restart "$UNIT"; then
+    if sudo systemctl is-active --quiet "$UNIT"; then
+      echo "==> $UNIT: active"
+    else
+      echo "==> 경고: restart 는 됐지만 active 아님 → systemctl status $UNIT"
+    fi
+  else
+    echo "==> 오류: systemctl restart 실패 (코드·npm 은 이미 반영됨)"
+    echo "    journalctl -xeu $UNIT --no-pager -n 40"
+    echo "    수동 확인: cd $ROOT/discord-bot && $(command -v node) index.mjs"
+    echo "    SELinux: getenforce → Enforcing 이면 sudo setenforce 0 후 재시도·restorecon 검토"
+  fi
 else
   echo "==> (건너뜀) $UNIT 유닛 파일 없음. 수동: cd $ROOT/discord-bot && npm start"
 fi
