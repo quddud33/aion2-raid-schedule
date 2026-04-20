@@ -10,6 +10,7 @@
  * 명령 안내: `/raid_notify help`
  * 내 가능 시간: `/raid_my_schedule` (금주·차주 14일만, 날짜별·연속 구간 묶음)
  * 겹침: `/raid_overlap` (레이드별 웹 전원, 멘션 없음) · 주사위: `/dice` (1~100, 채널에 멘션)
+ * 슈상보: `/sugo_ping` — 짝수 시 정각(06~08시 제외) 등록 채널에서 멘션
  */
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
@@ -62,6 +63,9 @@ function buildRaidAllowed(raw) {
 
 const RAID_ALLOWED = buildRaidAllowed(process.env.REMINDER_RAID_TYPE);
 const warnedBadChannelIds = new Set();
+
+/** 슈상보: 짝수 시 정각 알림. 오전 6~8시(6·7·8시) 제외 → 0,2,4,10,…,22 */
+const SUGO_MERCHANT_HOURS = new Set([0, 2, 4, 10, 12, 14, 16, 18, 20, 22]);
 
 function requireEnv(name, v) {
   if (!v) {
@@ -318,6 +322,7 @@ const SLASH_HELP_KO = [
   "**내 가능 시간:** `/raid_my_schedule` — 금주·차주(레이드 주 14일)만, 날짜별·연속 구간 묶어 표시 (본인만 보임).",
   "**공대 겹침:** `/raid_overlap` — 해당 레이드 **웹 등록 전원** 기준, 금주·차주에서 **전원 겹치는** 슬롯 (닉네임만, 멘션 없음).",
   "**주사위:** `/dice` — 1~100 무작위, 이 채널에 실행자 멘션.",
+  "**슈상보:** `/sugo_ping` — `register`/`unregister` 본인만, `list`는 서버 관리. 짝수 시 정각(06~08시 제외) 등록 채널에서 한 번에 멘션.",
 ].join("\n");
 
 function buildSlashCommands() {
@@ -419,6 +424,17 @@ function buildSlashCommands() {
       )
       .toJSON(),
     new SlashCommandBuilder().setName("dice").setDescription("1~100 랜덤 주사위 (이 채널에 멘션)").toJSON(),
+    new SlashCommandBuilder()
+      .setName("sugo_ping")
+      .setDescription("슈고 상인 보호(슈상보) 짝수 시 정각 알림")
+      .addSubcommand((sc) =>
+        sc.setName("register").setDescription("이 텍스트 채널에서 슈상보 알림 받기 (본인만)"),
+      )
+      .addSubcommand((sc) => sc.setName("unregister").setDescription("슈상보 알림 해제 (본인만)"))
+      .addSubcommand((sc) =>
+        sc.setName("list").setDescription("이 서버 등록자 목록 (서버 관리 전용)"),
+      )
+      .toJSON(),
   ];
 }
 
@@ -511,6 +527,102 @@ async function handleDiceInteraction(interaction) {
   });
 }
 
+async function handleSugoPingInteraction(supabase, interaction) {
+  const sub = interaction.options.getSubcommand(true);
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: "서버 안에서만 사용할 수 있어요.", ephemeral: true });
+    return;
+  }
+  const gid = interaction.guildId;
+
+  if (sub === "register") {
+    const ch = interaction.channel;
+    if (!ch?.isTextBased?.()) {
+      await interaction.reply({ content: "메시지를 보낼 수 있는 채널(텍스트·스레드 등)에서만 등록할 수 있어요.", ephemeral: true });
+      return;
+    }
+    const { error } = await supabase.from("discord_sugo_merchant_subscribers").upsert(
+      {
+        guild_id: gid,
+        channel_id: interaction.channelId,
+        discord_user_id: interaction.user.id,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "guild_id,discord_user_id" },
+    );
+    if (error) throw error;
+    await interaction.reply({
+      content: [
+        "🛡️ **슈상보** 알림을 등록했어요. (본인만 가능)",
+        `· 알림 채널: <#${interaction.channelId}>`,
+        "· **짝수 시 정각**에 멘션 (로컬 **06·07·08시**는 제외)",
+        "· 같은 서버에서 다시 등록하면 **지금 채널**로 바뀌어요.",
+      ].join("\n"),
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (sub === "unregister") {
+    const { error } = await supabase
+      .from("discord_sugo_merchant_subscribers")
+      .delete()
+      .eq("guild_id", gid)
+      .eq("discord_user_id", interaction.user.id);
+    if (error) throw error;
+    await interaction.reply({ content: "슈상보 알림을 해제했어요.", ephemeral: true });
+    return;
+  }
+
+  if (sub === "list") {
+    const canManage = interaction.member?.permissions?.has?.(PermissionFlagsBits.ManageGuild);
+    if (!canManage) {
+      await interaction.reply({ content: "이 서브명령은 **서버 관리(Manage Server)** 권한이 있어야 해요.", ephemeral: true });
+      return;
+    }
+    const { data, error } = await supabase
+      .from("discord_sugo_merchant_subscribers")
+      .select("channel_id, discord_user_id, updated_at")
+      .eq("guild_id", gid)
+      .order("channel_id", { ascending: true });
+    if (error) throw error;
+    if (!data?.length) {
+      await interaction.reply({ content: "이 서버에 슈상보를 등록한 사람이 아직 없어요.", ephemeral: true });
+      return;
+    }
+    const byCh = new Map();
+    for (const r of data) {
+      const cid = String(r.channel_id ?? "");
+      if (!byCh.has(cid)) byCh.set(cid, []);
+      byCh.get(cid).push(r);
+    }
+    const lines = ["**슈상보 등록 현황** (이 서버)"];
+    const allUserIds = [];
+    for (const [cid, rows] of [...byCh.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      lines.push("");
+      lines.push(`📍 <#${cid}>`);
+      for (const r of rows) {
+        allUserIds.push(String(r.discord_user_id));
+        lines.push(`· <@${r.discord_user_id}> — 갱신 ${formatKo(new Date(r.updated_at))}`);
+      }
+    }
+    const mentionUsers = [...new Set(allUserIds)].slice(0, 100);
+    const chunks = chunkLines(lines);
+    await interaction.reply({
+      content: chunks[0],
+      ephemeral: true,
+      allowedMentions: { users: mentionUsers },
+    });
+    for (let i = 1; i < chunks.length; i++) {
+      await interaction.followUp({
+        content: chunks[i],
+        ephemeral: true,
+        allowedMentions: { users: mentionUsers },
+      });
+    }
+  }
+}
+
 async function handleMyScheduleInteraction(supabase, interaction) {
   const uid = interaction.user.id;
   const filter = (interaction.options.getString("raid_type") ?? "all").trim().toLowerCase();
@@ -596,7 +708,7 @@ async function registerSlashCommandsOnAllGuilds(client) {
     try {
       await rest.put(Routes.applicationGuildCommands(appId, g.id), { body });
       console.log(
-        `[Discord] 슬래시 등록 (/raid_notify, /raid_my_schedule, /raid_overlap, /dice): ${g.name} (${g.id})`,
+        `[Discord] 슬래시 등록 (raid_notify·my_schedule·overlap·dice·sugo_ping): ${g.name} (${g.id})`,
       );
     } catch (e) {
       console.error(`[Discord] 슬래시 등록 실패 (${g.name} / ${g.id}):`, e?.rawError?.message ?? e?.message ?? e);
@@ -612,7 +724,7 @@ async function registerSlashCommandsForGuild(client, guildId, guildName = "") {
   const body = buildSlashCommands();
   await rest.put(Routes.applicationGuildCommands(appId, guildId), { body });
   console.log(
-    `[Discord] 슬래시 등록 (신규 서버 · raid_notify·my_schedule·overlap·dice): ${guildName || guildId} (${guildId})`,
+    `[Discord] 슬래시 등록 (신규 서버 · …·sugo_ping): ${guildName || guildId} (${guildId})`,
   );
 }
 
@@ -963,6 +1075,68 @@ async function runTick(client, supabase, state) {
   return nextState;
 }
 
+async function runSugoMerchantTick(client, supabase, state) {
+  const now = Date.now();
+  const d = new Date();
+  const hourStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), 0, 0, 0).getTime();
+  if (Math.abs(now - hourStart) > 90_000) return state;
+
+  const h = d.getHours();
+  if (!SUGO_MERCHANT_HOURS.has(h)) return state;
+
+  const dk = dateKeyLocalFromDate(d);
+  const { data, error } = await supabase.from("discord_sugo_merchant_subscribers").select("channel_id, discord_user_id");
+  if (error) throw error;
+
+  const byChannel = new Map();
+  for (const row of data ?? []) {
+    const cid = String(row.channel_id ?? "").trim();
+    if (!/^\d{5,30}$/.test(cid)) continue;
+    const uid = String(row.discord_user_id ?? "").trim();
+    if (!/^\d{5,30}$/.test(uid)) continue;
+    if (!byChannel.has(cid)) byChannel.set(cid, []);
+    byChannel.get(cid).push(uid);
+  }
+
+  let nextState = { ...state };
+  let any = false;
+
+  for (const [channelId, userIds] of byChannel) {
+    const unique = [...new Set(userIds)].slice(0, 100);
+    if (unique.length === 0) continue;
+
+    const flagKey = `sugo|${channelId}|${dk}|${h}`;
+    if (nextState[flagKey]) continue;
+
+    let ch;
+    try {
+      ch = await client.channels.fetch(channelId);
+    } catch {
+      continue;
+    }
+    if (!ch?.isTextBased?.()) continue;
+
+    const mentionLine = unique.map((id) => `<@${id}>`).join(" ");
+    const text = [
+      "🛡️ **슈고 상인 보호(슈상보)** 짝수 시 정각 알림이야! (오전 6~8시 제외)",
+      `⏰ ${String(h).padStart(2, "0")}:00`,
+      mentionLine,
+      "_상인님 조심히 다녀오세요~ ✨_",
+    ].join("\n");
+
+    await ch.send({
+      content: text,
+      allowedMentions: { users: unique },
+    });
+    nextState[flagKey] = new Date().toISOString();
+    any = true;
+    console.log(`[슈상보 전송] ${flagKey}`);
+  }
+
+  if (any) await saveState(nextState);
+  return any ? nextState : state;
+}
+
 async function main() {
   requireEnv("DISCORD_BOT_TOKEN", TOKEN);
   requireEnv("DISCORD_CHANNEL_ID", CHANNEL_ID);
@@ -972,6 +1146,9 @@ async function main() {
   const raidDesc = RAID_ALLOWED ? [...RAID_ALLOWED].sort().join(", ") : "rudra + bagot + lostark (전체)";
   console.log(
     `[설정] TZ=${process.env.TZ ?? "(기본)"} STATE=${STATE_PATH} POLL=${POLL_MS}ms 당일=${REMIND_DAY_HOUR}시 알림대상=${raidDesc} .env기본채널=${CHANNEL_ID}`,
+  );
+  console.log(
+    `[슈상보] 짝수 시 정각 멘션(06·07·08시 제외) — 시각: ${[...SUGO_MERCHANT_HOURS].sort((a, b) => a - b).join(", ")}`,
   );
 
   const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
@@ -1003,7 +1180,7 @@ async function main() {
     client.on(Events.InteractionCreate, async (interaction) => {
       if (!interaction.isChatInputCommand()) return;
       const cn = interaction.commandName;
-      if (!["raid_notify", "raid_my_schedule", "raid_overlap", "dice"].includes(cn)) return;
+      if (!["raid_notify", "raid_my_schedule", "raid_overlap", "dice", "sugo_ping"].includes(cn)) return;
       try {
         if (cn === "raid_notify") {
           await handleRaidNotifyInteraction(supabase, interaction);
@@ -1011,8 +1188,10 @@ async function main() {
           await handleMyScheduleInteraction(supabase, interaction);
         } else if (cn === "raid_overlap") {
           await handleOverlapInteraction(supabase, interaction);
-        } else {
+        } else if (cn === "dice") {
           await handleDiceInteraction(interaction);
+        } else {
+          await handleSugoPingInteraction(supabase, interaction);
         }
       } catch (e) {
         console.error("[slash]", e?.message ?? e);
@@ -1031,6 +1210,7 @@ async function main() {
   const tick = async () => {
     try {
       state = await runTick(client, supabase, state);
+      state = await runSugoMerchantTick(client, supabase, state);
     } catch (e) {
       console.error("[틱 오류]", e?.message ?? e);
     }
