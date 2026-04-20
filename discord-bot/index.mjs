@@ -262,6 +262,11 @@ function clearRemindTimer(id) {
   gAlarmTimers.delete(id);
 }
 
+/** Discord API: allowedMentions.users 에 동일 ID 중복 시 50035 */
+function uniqueMentionUserIds(...ids) {
+  return [...new Set(ids.map((x) => String(x ?? "").trim()).filter((s) => /^\d{5,30}$/.test(s)))];
+}
+
 /** @returns {Promise<boolean>} */
 async function sendRemindAlarmMessage(alarm) {
   if (!gAlarmClient) {
@@ -291,7 +296,7 @@ async function sendRemindAlarmMessage(alarm) {
     const lines = ["⏰ **알람 시간이에요**", `<@${alarm.targetUserId}>`, `_(${label} · 등록: <@${alarm.createdById}>)_`];
     await ch.send({
       content: lines.join("\n"),
-      allowedMentions: { users: [alarm.targetUserId, alarm.createdById].filter(Boolean) },
+      allowedMentions: { users: uniqueMentionUserIds(alarm.targetUserId, alarm.createdById) },
     });
     console.log(`[알람 발송] 채널=${alarm.channelId} 대상=${alarm.targetUserId} (${alarm.labelKo ?? ""})`);
     return true;
