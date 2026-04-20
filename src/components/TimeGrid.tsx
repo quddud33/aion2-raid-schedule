@@ -67,6 +67,50 @@ export type SlotWho = {
 
 const OVERLAP_LEAVE_MS = 140;
 
+const MOBILE_MQ = "(max-width: 767px)";
+const VERTICAL_MODE_STORAGE_KEY = "aion2-timegrid-vertical-day";
+
+function readVerticalModePreference(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.sessionStorage.getItem(VERTICAL_MODE_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeVerticalModePreference(on: boolean) {
+  try {
+    if (on) window.sessionStorage.setItem(VERTICAL_MODE_STORAGE_KEY, "1");
+    else window.sessionStorage.removeItem(VERTICAL_MODE_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** md 미만에서만 true — 세로 편집·날짜 칩 등 */
+function useNarrowLayout() {
+  const [narrow, setNarrow] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia(MOBILE_MQ).matches : false,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_MQ);
+    const on = () => setNarrow(mq.matches);
+    on();
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return narrow;
+}
+
+/** 가로 스크롤 시 첫 열(날짜·축 라벨) 고정 */
+const scrollStickyCorner =
+  "sticky left-0 z-20 bg-white/98 backdrop-blur-sm shadow-[4px_0_14px_-6px_rgba(15,23,42,0.22)] dark:bg-slate-900/98 dark:shadow-[4px_0_16px_-6px_rgba(0,0,0,0.55)]";
+const scrollStickyTimeAxis =
+  "sticky left-0 z-[15] bg-white/98 backdrop-blur-sm shadow-[3px_0_12px_-5px_rgba(15,23,42,0.2)] dark:bg-slate-900/98 dark:shadow-[3px_0_14px_-5px_rgba(0,0,0,0.45)]";
+const scrollStickyDayAxis =
+  "sticky left-0 z-10 bg-white/98 backdrop-blur-sm shadow-[3px_0_12px_-5px_rgba(15,23,42,0.18)] dark:bg-slate-900/98 dark:shadow-[3px_0_14px_-5px_rgba(0,0,0,0.42)]";
+
 type OverlapPopoverState = {
   slotKey: string;
   headline: string;
@@ -126,8 +170,23 @@ export function TimeGrid({
   const leaveOverlapTimerRef = useRef<number | null>(null);
 
   const gridScrollRef = useRef<HTMLDivElement>(null);
+  const dayRowLabelRefs = useRef<(HTMLDivElement | null)[]>([]);
   /** 모바일: 가로 스크롤 가능 여부 + 끝 도달 (버튼·가장자리 힌트용) */
   const [hScroll, setHScroll] = useState({ overflow: false, canLeft: false, canRight: false });
+  const narrowLayout = useNarrowLayout();
+  const [mobileVerticalDay, setMobileVerticalDay] = useState(readVerticalModePreference);
+  const [verticalDayIdx, setVerticalDayIdx] = useState(0);
+
+  useEffect(() => {
+    if (!narrowLayout && mobileVerticalDay) {
+      setMobileVerticalDay(false);
+      writeVerticalModePreference(false);
+    }
+  }, [narrowLayout, mobileVerticalDay]);
+
+  useEffect(() => {
+    if (verticalDayIdx >= columns.length) setVerticalDayIdx(0);
+  }, [columns.length, verticalDayIdx]);
 
   const updateHScroll = useCallback(() => {
     const el = gridScrollRef.current;
@@ -362,14 +421,78 @@ export function TimeGrid({
         <div className="mb-3 flex flex-wrap items-end justify-between gap-2 border-b border-sky-100/90 pb-3 dark:border-slate-700/90">
           {scheduleIntro}
           <p className="w-full text-[11px] leading-snug text-slate-500 dark:text-slate-400 md:hidden">
-            표는 <strong className="text-slate-600 dark:text-slate-300">가로로 스크롤</strong>합니다. 아래{" "}
-            <strong className="text-slate-600 dark:text-slate-300">이전·다음</strong> 버튼으로도 옮길 수
-            있으며, 맨 아래 가로 막대를 드래그해도 됩니다.
+            <strong className="text-slate-600 dark:text-slate-300">세로 편집</strong>으로 하루만 크게
+            펼쳐 입력하거나, 날짜 칩으로 해당 줄로 이동할 수 있습니다. 표 모드에서는{" "}
+            <strong className="text-slate-600 dark:text-slate-300">가로 스크롤</strong>·이전·다음 시간
+            버튼을 쓰면 됩니다.
           </p>
         </div>
       )}
 
-      {hScroll.overflow ? (
+      {narrowLayout ? (
+        <div className="mb-3 flex flex-col gap-2 md:hidden">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const next = !mobileVerticalDay;
+                setMobileVerticalDay(next);
+                writeVerticalModePreference(next);
+              }}
+              className={[
+                "min-h-11 shrink-0 rounded-xl border px-3 text-sm font-semibold shadow-sm transition active:scale-[0.98]",
+                mobileVerticalDay
+                  ? "border-violet-400 bg-violet-600 text-white dark:border-violet-500 dark:bg-violet-600"
+                  : "border-sky-300/90 bg-white text-sky-900 dark:border-slate-600 dark:bg-slate-800 dark:text-sky-100",
+              ].join(" ")}
+            >
+              {mobileVerticalDay ? "표로 보기" : "세로 편집 (하루)"}
+            </button>
+            <span className="text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+              {mobileVerticalDay
+                ? "시간만 위아래로 훑으면 됩니다."
+                : "날짜 칩을 누르면 그날 행으로 스크롤됩니다."}
+            </span>
+          </div>
+          {!mobileVerticalDay ? (
+            <div
+              className="-mx-1 flex gap-1.5 overflow-x-auto overscroll-x-contain px-1 py-0.5 [scrollbar-width:thin]"
+              role="tablist"
+              aria-label="날짜로 이동"
+            >
+              {columns.map((col, i) => (
+                <button
+                  key={`jump-${col.label}`}
+                  type="button"
+                  role="tab"
+                  onClick={() => {
+                    setVerticalDayIdx(i);
+                    dayRowLabelRefs.current[i]?.scrollIntoView({
+                      behavior: "smooth",
+                      block: "center",
+                    });
+                  }}
+                  className={[
+                    "flex min-h-10 min-w-0 shrink-0 flex-col items-center justify-center rounded-xl border px-2.5 py-1.5 text-center transition active:scale-[0.98]",
+                    col.raidWeek === "next"
+                      ? "border-violet-300/90 bg-violet-50/90 text-violet-900 dark:border-violet-800 dark:bg-violet-950/50 dark:text-violet-100"
+                      : "border-sky-200/90 bg-white text-slate-800 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100",
+                  ].join(" ")}
+                >
+                  <span className="max-w-[5.25rem] truncate text-[11px] font-bold leading-tight">{col.short}</span>
+                  {col.raidWeek === "next" ? (
+                    <span className="mt-0.5 text-[9px] font-bold text-violet-700 dark:text-violet-300">차주</span>
+                  ) : (
+                    <span className="mt-0.5 text-[9px] font-medium text-slate-500 dark:text-slate-400">금주</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {hScroll.overflow && !mobileVerticalDay ? (
         <div className="mb-2 grid grid-cols-2 gap-2 md:hidden">
           <button
             type="button"
@@ -390,8 +513,140 @@ export function TimeGrid({
         </div>
       ) : null}
 
+      {narrowLayout && mobileVerticalDay ? (
+        <div className="md:hidden">
+          <div
+            className="-mx-0.5 flex gap-1.5 overflow-x-auto overscroll-x-contain px-0.5 pb-2 [scrollbar-width:thin]"
+            role="tablist"
+            aria-label="편집할 날짜"
+          >
+            {columns.map((col, i) => (
+              <button
+                key={`vd-${col.label}`}
+                type="button"
+                role="tab"
+                aria-selected={i === verticalDayIdx}
+                onClick={() => setVerticalDayIdx(i)}
+                className={[
+                  "flex min-h-11 min-w-0 shrink-0 flex-col items-center justify-center rounded-xl border px-2.5 py-2 text-center transition active:scale-[0.98]",
+                  i === verticalDayIdx
+                    ? "border-violet-500 bg-violet-600 text-white shadow-md dark:border-violet-400 dark:bg-violet-600"
+                    : col.raidWeek === "next"
+                      ? "border-violet-300/90 bg-violet-50/90 text-violet-900 dark:border-violet-800 dark:bg-violet-950/50 dark:text-violet-100"
+                      : "border-sky-200/90 bg-white text-slate-800 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100",
+                ].join(" ")}
+              >
+                <span className="max-w-[5.5rem] truncate text-[11px] font-bold leading-tight">{col.short}</span>
+                {col.raidWeek === "next" ? (
+                  <span
+                    className={[
+                      "mt-0.5 text-[9px] font-bold",
+                      i === verticalDayIdx ? "text-violet-100" : "text-violet-700 dark:text-violet-300",
+                    ].join(" ")}
+                  >
+                    차주
+                  </span>
+                ) : (
+                  <span
+                    className={[
+                      "mt-0.5 text-[9px] font-medium",
+                      i === verticalDayIdx ? "text-violet-100/90" : "text-slate-500 dark:text-slate-400",
+                    ].join(" ")}
+                  >
+                    금주
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          {(() => {
+            const col = columns[verticalDayIdx] ?? columns[0];
+            if (!col) return null;
+            const dIdx = verticalDayIdx < columns.length ? verticalDayIdx : 0;
+            const dayKeys = keysForDay(columns, dIdx);
+            const allOn = dayKeys.length > 0 && dayKeys.every((k) => selected.has(k));
+            return (
+              <div className="rounded-xl border border-violet-200/70 bg-white/90 p-3 shadow-sm dark:border-violet-900/40 dark:bg-slate-900/80">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-violet-100/80 pb-3 dark:border-violet-900/40">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">{col.label}</p>
+                    <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">30분 단위 · 드래그로 연속 선택</p>
+                  </div>
+                  <button
+                    type="button"
+                    className={[
+                      "min-h-11 shrink-0 rounded-xl border px-3 text-xs font-bold transition active:scale-[0.98]",
+                      allOn
+                        ? "border-blue-700 bg-blue-600 text-white dark:border-blue-400 dark:bg-blue-600"
+                        : "border-sky-200 bg-white text-sky-800 hover:bg-sky-50 dark:border-slate-600 dark:bg-slate-800 dark:text-sky-200 dark:hover:bg-slate-700",
+                    ].join(" ")}
+                    onClick={(e) => toggleDayAll(e, dIdx)}
+                  >
+                    이 날 전체 {allOn ? "해제" : "선택"}
+                  </button>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {Array.from({ length: SLOTS }, (_, slot) => {
+                    const key = keyForSlot(slot, col.date);
+                    const on = selected.has(key);
+                    const heat = heatCount?.get(key) ?? 0;
+                    const showCount = heat > 0;
+                    const whoList = whoBySlot?.get(key);
+                    const headline = `${col.short} · ${slotLabel(slot)}`;
+                    return (
+                      <button
+                        key={`vslot-${key}`}
+                        type="button"
+                        aria-pressed={on}
+                        aria-label={ariaSlotLabel(key, heat)}
+                        data-slot={key}
+                        data-day-index={dIdx}
+                        data-slot-index={slot}
+                        className={[
+                          "flex min-h-[52px] w-full touch-manipulation items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left transition-colors active:scale-[0.99]",
+                          on
+                            ? "border-blue-800 bg-blue-500/35 shadow-sm dark:border-blue-300 dark:bg-blue-500/40"
+                            : showCount
+                              ? "border-blue-200/90 bg-blue-50/90 dark:border-blue-900/50 dark:bg-blue-950/35"
+                              : "border-slate-200/90 bg-white dark:border-slate-600 dark:bg-slate-800/90",
+                        ].join(" ")}
+                        onPointerDown={(e) => onCellPointerDown(e, dIdx, slot)}
+                        onPointerEnter={(e) => {
+                          if (heat <= 0 || dragging.current) return;
+                          openOverlapPopover(
+                            (e.currentTarget as HTMLButtonElement).getBoundingClientRect(),
+                            key,
+                            headline,
+                            heat,
+                            whoList ?? [],
+                          );
+                        }}
+                        onPointerLeave={scheduleOverlapClose}
+                      >
+                        <span className="text-sm font-bold tabular-nums text-slate-800 dark:text-slate-100">
+                          {slotLabel(slot)}
+                        </span>
+                        <span
+                          className={[
+                            "flex h-9 min-w-9 items-center justify-center rounded-lg text-xs font-bold tabular-nums",
+                            showCount
+                              ? "bg-blue-600/15 text-blue-900 dark:bg-blue-500/20 dark:text-blue-100"
+                              : "text-slate-300 dark:text-slate-600",
+                          ].join(" ")}
+                        >
+                          {showCount ? `${heat}명` : "—"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      ) : (
       <div className="relative max-md:rounded-lg">
-        {hScroll.overflow ? (
+        {hScroll.overflow && !mobileVerticalDay ? (
           <>
             <div
               className={[
@@ -420,7 +675,9 @@ export function TimeGrid({
               "md:[grid-template-columns:9.25rem_repeat(30,minmax(1.15rem,1fr))]",
             ].join(" ")}
           >
-        <div className="text-[9px] font-medium text-slate-500 dark:text-slate-400">시간 구간</div>
+        <div className={["text-[9px] font-medium text-slate-500 dark:text-slate-400", scrollStickyCorner].join(" ")}>
+          시간 구간
+        </div>
         <div
           className="flex flex-col items-center justify-center rounded-md bg-sky-100/90 px-1 py-1 text-center dark:bg-slate-800/80"
           style={{ gridColumn: `2 / span ${morningSlots}` }}
@@ -436,7 +693,12 @@ export function TimeGrid({
           <span className="text-[8px] leading-tight text-blue-800/80 dark:text-blue-300/90">24시 · 후반</span>
         </div>
 
-        <div className="flex items-end pb-1 text-[10px] font-medium text-sky-700 dark:text-sky-300">
+        <div
+          className={[
+            "flex items-end pb-1 text-[10px] font-medium text-sky-700 dark:text-sky-300",
+            scrollStickyTimeAxis,
+          ].join(" ")}
+        >
           날짜 / 전체
         </div>
         {Array.from({ length: SLOTS }, (_, slot) => (
@@ -456,8 +718,12 @@ export function TimeGrid({
           return (
             <Fragment key={col.label}>
               <div
+                ref={(el) => {
+                  dayRowLabelRefs.current[dayIdx] = el;
+                }}
                 className={[
                   "flex min-h-[2.25rem] items-stretch gap-1 border-r py-0.5 pr-1 text-xs font-semibold leading-tight",
+                  scrollStickyDayAxis,
                   col.raidWeek === "next"
                     ? "border-violet-200 text-violet-800 dark:border-violet-800/60 dark:text-violet-200"
                     : "border-sky-100 text-slate-800 dark:border-slate-700 dark:text-slate-100",
@@ -544,6 +810,7 @@ export function TimeGrid({
           </div>
         </div>
       </div>
+      )}
       {overlapPopover &&
         typeof document !== "undefined" &&
         createPortal(
@@ -651,9 +918,9 @@ export function TimeGrid({
           <strong>09:00–24:00</strong>만 표시합니다.
         </p>
         <p className="md:hidden">
-          <strong>모바일:</strong> 표 아래 <strong>이전·다음 시간</strong> 버튼, 맨 아래{" "}
-          <strong>가로 스크롤바</strong>, 또는 표 위에서 <strong>좌우로 밀기</strong>로 시간대를 옮긴 뒤
-          탭·드래그하면 됩니다.
+          <strong>모바일:</strong> <strong>세로 편집(하루)</strong>이 가장 편합니다. 표 모드에서는 날짜 열이
+          가로 스크롤에 고정되고, <strong>날짜 칩</strong>으로 그날 행으로 이동할 수 있습니다. 시간대는{" "}
+          <strong>이전·다음 시간</strong> 버튼·가로 스크롤로 옮긴 뒤 탭·드래그하면 됩니다.
         </p>
       </div>
     </div>
