@@ -176,30 +176,56 @@
 
 4) 데이터 모델
 
-   - raid_availability: user_id, raid_type(rudra | bagot | lostark), nickname, avatar_url(프로필 이미지 URL), slots[], updated_at
+   - raid_availability: user_id, raid_type(rudra | bagot | lostark), nickname, avatar_url, discord_id(멘션 봇용
 
-     — 이름·프로필은 Discord 세션에서 자동 반영되며, 기존 DB에는 `20260218140000_raid_availability_avatar_url.sql` 로 컬럼 추가
+     Discord snowflake, 저장 시 자동), slots[], updated_at
+
+     — 이름·프로필·discord_id 는 Discord 세션에서 반영. 기존 DB: `20260218140000` (avatar), `20260218150000` (discord_id·확정)
+
+   - raid_schedule_confirmation: raid_type, raid_week_start(수요일 시작일 date), slot_key, confirmed_by, updated_at
+
+   - raid_schedule_confirm_allowlist: discord_username (확정 RPC 허용; 기본 `.yongi` 한 줄 삽입)
 
    - 기존 DB에 server_name / combat_power 컬럼이 있으면 migrations 의 20260218120000 스크립트로 제거·raid_type 확장
 
 
 
-5) 로스트아크 탭 — 어떻게 접근하나요?
+5) 로스트아크 전용 URL — 어떻게 접근하나요?
 
    - 빌드·배포 시 `.env` 또는 GitHub Actions 시크릿에 **둘 중 하나 이상**을 넣습니다. (`.env.example` 참고)
 
-       * `VITE_LOSTARK_ENTRY_PATH=lostark`  → Vite `base` 뒤 **첫 경로**가 `lostark`일 때만 탭 노출
+       * `VITE_LOSTARK_ENTRY_PATH=lostark`  → Vite `base` 뒤 **첫 경로**가 `lostark`일 때 로스트아크 전용 화면
 
-       * 또는 `VITE_LOSTARK_ENTRY_HASH=#/lostark`  → 주소의 **해시**가 정확히 `#/lostark`일 때만 탭 노출
+       * 또는 `VITE_LOSTARK_ENTRY_HASH=#/lostark`  → 주소의 **해시**가 정확히 `#/lostark`일 때 동일
 
    - **경로로 입장** 예: `https://내계정.github.io/저장소이름/lostark` (로컬은 `http://localhost:5173/lostark`)
 
    - **해시로 입장** 예: `https://내계정.github.io/저장소이름/#/lostark`
 
-   - 위 조건으로 들어온 브라우저에서만 헤더에「아이온2 | 로스트아크」전환이 보입니다. 로스트아크 쪽 화면에서는
+   - 위 조건으로 들어오면 **아이온2 전환 탭 없이** 곧바로 로스트아크(에기르 나메) 일정만 보이며, DB `raid_type=lostark` 입니다.
 
-     하위 레이드 **에기르 나메** 일정을 맞추며, DB 저장 값은 `raid_type=lostark` 입니다.
+   - 루트 URL(예: …/저장소이름/)은 아이온2(루드라/바고트)만 보입니다.
 
-   - `VITE_LOSTARK_ENTRY_PATH` 와 `VITE_LOSTARK_ENTRY_HASH` 를 **둘 다 비우면** 아이온2(루드라/바고트)만 제공됩니다.
+   - `VITE_LOSTARK_ENTRY_PATH` 와 `VITE_LOSTARK_ENTRY_HASH` 를 **둘 다 비우면** 로스트아크 전용 입장 경로가 없습니다.
+
+
+
+6) 일정 확정 + (선택) 출발 알림 봇
+
+   - DB 마이그레이션 `20260218150000_raid_schedule_confirmation.sql` 적용 후, JWT의 Discord 핸들이
+
+     `raid_schedule_confirm_allowlist` 와 일치하는 사용자만 확정/취소 RPC 를 호출할 수 있습니다. 기본 허용은 `.yongi`
+
+     한 줄입니다. 추가 시 SQL Editor: `insert into raid_schedule_confirm_allowlist (discord_username) values ('다른핸들');`
+
+   - JWT의 `user_metadata.name` / `preferred_username` 등과 allowlist 문자열이 다르면 확정 권한이 없을 수 있습니다.
+
+     raw_user_meta_data 를 확인하거나 로그아웃 후 재로그인해 보세요.
+
+   - **출발 1일 전·30분 전 멘션 봇**: 웹앱만으로는 예약 발송이 불가합니다. 별도 봇 프로세스(항상 켜진 서버·크론
+
+     등)에서 Supabase로 확정 슬롯과 참가자(`raid_availability`에 확정 slot 포함 + `discord_id`)를 읽고 Discord API로
+
+     채널에 `<@snowflake>` 멘션을 포함한 메시지를 내면 됩니다. 개요는 `discord-bot/README.md` 를 참고하세요.
 
 

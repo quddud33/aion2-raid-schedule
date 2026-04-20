@@ -70,6 +70,28 @@ export function dateKeyLocal(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/** 슬롯이 속한 레이드 주의 수요일(금주·차주) 날짜 키 — columns 는 buildRaidWeekColumns 결과(14일) */
+export function raidWeekStartDateKeyForSlot(columns: DayColumn[], slotKey: string): string | null {
+  const p = parseSlotKey(slotKey);
+  if (!p) return null;
+  const idx = columns.findIndex((c) => dateKeyLocal(c.date) === p.day);
+  if (idx < 0) return null;
+  const phase = columns[idx]!.raidWeek;
+  const startIdx = phase === "current" ? 0 : 7;
+  return dateKeyLocal(columns[startIdx]!.date);
+}
+
+/** 표·확정 UI용 한 줄 라벨 */
+export function slotKeyLabel(key: string, columns: DayColumn[]): string {
+  const p = parseSlotKey(key);
+  if (!p) return key;
+  const col = columns.find((c) => dateKeyLocal(c.date) === p.day);
+  const dayPart = col?.short ?? p.day;
+  const start = formatMinuteLabel(p.minutes);
+  const end = formatMinuteLabel(p.minutes + 30);
+  return `${dayPart} ${start}–${end}`;
+}
+
 /** 금주·차주 열 기준으로 슬롯 키만 남김 */
 export function filterSlotsByRaidPhase(
   keys: string[],

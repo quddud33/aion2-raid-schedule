@@ -1,10 +1,16 @@
 import type { User } from "@supabase/supabase-js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MatchSummary } from "./components/MatchSummary";
+import { ScheduleConfirmPanel, type WeekConfirmation } from "./components/ScheduleConfirmPanel";
 import { TimeGrid } from "./components/TimeGrid";
-import { discordAvatarUrl, discordNicknameForDb } from "./lib/discordProfile";
+import { discordAvatarUrl, discordNicknameForDb, discordProviderId } from "./lib/discordProfile";
 import { isLostArkPortal } from "./lib/lostArkPortal";
-import { buildRaidWeekColumns } from "./lib/slots";
+import {
+  buildRaidWeekColumns,
+  dateKeyLocal,
+  intersectSlots,
+  raidWeekStartDateKeyForSlot,
+} from "./lib/slots";
 import { supabase, supabaseConfigured } from "./lib/supabase";
 
 type AionRaidType = "rudra" | "bagot";
@@ -20,6 +26,7 @@ type AvailabilityRow = {
   raid_type: DbRaidType;
   nickname: string;
   avatar_url?: string | null;
+  discord_id?: string | null;
   slots: string[];
   updated_at: string;
 };
@@ -68,7 +75,12 @@ export function App() {
     return isLostArkPortal();
   }, [routeTick]);
 
-  const [universe, setUniverse] = useState<Universe>("aion");
+  const [universe, setUniverse] = useState<Universe>(() =>
+    typeof window !== "undefined" && isLostArkPortal() ? "lostark" : "aion",
+  );
+  useEffect(() => {
+    if (lostArkGate) setUniverse("lostark");
+  }, [lostArkGate]);
   useEffect(() => {
     if (!lostArkGate && universe === "lostark") setUniverse("aion");
   }, [lostArkGate, universe]);
@@ -86,6 +98,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [sessionUser, setSessionUser] = useState<User | null>(null);
   const [darkMode, setDarkMode] = useState(readInitialDark);
+  const [confirmByWeek, setConfirmByWeek] = useState<Map<string, WeekConfirmation>>(() => new Map());
+  const [canConfirmSchedule, setCanConfirmSchedule] = useState(false);
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
@@ -93,6 +108,14 @@ export function App() {
   }, [darkMode]);
 
   const columns = useMemo(() => buildRaidWeekColumns(new Date()), []);
+
+  const raidWeekStartCurrent = useMemo(() => dateKeyLocal(columns[0]!.date), [columns]);
+  const raidWeekStartNext = useMemo(() => dateKeyLocal(columns[7]!.date), [columns]);
+
+  const intersectionAll = useMemo(() => {
+    const withSlots = rows.filter((r) => r.slots.length > 0);
+    return withSlots.length === 0 ? [] : intersectSlots(withSlots.map((r) => r.slots));
+  }, [rows]);
 
   const heatCount = useMemo(() => {
     const m = new Map<string, number>();
@@ -143,6 +166,33 @@ export function App() {
     }
     setRows(r.rows);
   }, [fetchRowsFromDb]);
+
+  const normWeekDate = (d: unknown): string => {
+    if (typeof d === "string") return d.slice(0, 10);
+    if (d instanceof Date) return dateKeyLocal(d);
+    return String(d ?? "").slice(0, 10);
+  };
+
+  const loadConfirmations = useCallback(async () => {
+    if (!supabase) return;
+    const { data, error: ce } = await supabase
+      .from("raid_schedule_confirmation")
+      .select("raid_week_start, slot_key, updated_at")
+      .eq("raid_type", dbRaidType)
+      .in("raid_week_start", [raidWeekStartCurrent, raidWeekStartNext]);
+    if (ce) {
+      setError(ce.message);
+      return;
+    }
+    const m = new Map<string, WeekConfirmation>();
+    for (const r of data ?? []) {
+      m.set(normWeekDate(r.raid_week_start), {
+        slot_key: r.slot_key as string,
+        updated_at: r.updated_at as string,
+      });
+    }
+    setConfirmByWeek(m);
+  }, [supabase, dbRaidType, raidWeekStartCurrent, raidWeekStartNext]);
 
   const onRefreshParticipants = useCallback(async () => {
     if (!supabase) return;
@@ -232,6 +282,30 @@ export function App() {
 
   useEffect(() => {
     if (!supabase || !sessionUser) return;
+    void loadConfirmations();
+  }, [supabase, sessionUser, loadConfirmations]);
+
+  useEffect(() => {
+    if (!supabase || !sessionUser) {
+      setCanConfirmSchedule(false);
+      return;
+    }
+    let cancelled = false;
+    void supabase.rpc("can_confirm_schedule").then(({ data, error }) => {
+      if (cancelled) return;
+      if (error) {
+        setCanConfirmSchedule(false);
+        return;
+      }
+      setCanConfirmSchedule(data === true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase, sessionUser]);
+
+  useEffect(() => {
+    if (!supabase || !sessionUser) return;
     const client = supabase;
     const channel = client
       .channel(`raid_availability:${dbRaidType}`)
@@ -255,6 +329,29 @@ export function App() {
 
   useEffect(() => {
     if (!supabase || !sessionUser) return;
+    const client = supabase;
+    const ch = client
+      .channel(`raid_schedule_confirmation:${dbRaidType}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "raid_schedule_confirmation",
+          filter: `raid_type=eq.${dbRaidType}`,
+        },
+        () => {
+          void loadConfirmations();
+        },
+      )
+      .subscribe();
+    return () => {
+      void client.removeChannel(ch);
+    };
+  }, [sessionUser, dbRaidType, loadConfirmations, supabase]);
+
+  useEffect(() => {
+    if (!supabase || !sessionUser) return;
     void (async () => {
       const { data: u } = await supabase.auth.getUser();
       const uid = u.user?.id;
@@ -273,7 +370,9 @@ export function App() {
     const av = discordAvatarUrl(sessionUser);
     const avNorm = av ?? "";
     const mineAv = mine.avatar_url ?? "";
-    if (mine.nickname === nick && mineAv === avNorm) return;
+    const did = discordProviderId(sessionUser);
+    const mineDid = mine.discord_id ?? "";
+    if (mine.nickname === nick && mineAv === avNorm && mineDid === (did ?? "")) return;
     void (async () => {
       const { error } = await supabase.from("raid_availability").upsert(
         {
@@ -281,6 +380,7 @@ export function App() {
           raid_type: dbRaidType,
           nickname: nick,
           avatar_url: av,
+          discord_id: did,
           slots: mine.slots,
           updated_at: mine.updated_at,
         },
@@ -330,6 +430,7 @@ export function App() {
       raid_type: dbRaidType,
       nickname: discordNicknameForDb(user),
       avatar_url: discordAvatarUrl(user),
+      discord_id: discordProviderId(user),
       slots: [...mySlots],
       updated_at: new Date().toISOString(),
     };
@@ -368,6 +469,49 @@ export function App() {
     setMySlots(new Set());
     await loadRows();
   };
+
+  const onConfirmSchedule = useCallback(
+    async (raidWeekStart: string, slotKey: string) => {
+      if (!supabase) return;
+      if (raidWeekStartDateKeyForSlot(columns, slotKey) !== raidWeekStart) {
+        setError("선택한 슬롯이 해당 레이드 주와 맞지 않습니다.");
+        return;
+      }
+      setConfirmBusy(true);
+      setError(null);
+      const { error: re } = await supabase.rpc("upsert_schedule_confirmation", {
+        p_raid_type: dbRaidType,
+        p_raid_week_start: raidWeekStart,
+        p_slot_key: slotKey,
+      });
+      setConfirmBusy(false);
+      if (re) {
+        setError(re.message);
+        return;
+      }
+      await loadConfirmations();
+    },
+    [supabase, dbRaidType, columns, loadConfirmations],
+  );
+
+  const onClearSchedule = useCallback(
+    async (raidWeekStart: string) => {
+      if (!supabase) return;
+      setConfirmBusy(true);
+      setError(null);
+      const { error: re } = await supabase.rpc("clear_schedule_confirmation", {
+        p_raid_type: dbRaidType,
+        p_raid_week_start: raidWeekStart,
+      });
+      setConfirmBusy(false);
+      if (re) {
+        setError(re.message);
+        return;
+      }
+      await loadConfirmations();
+    },
+    [supabase, dbRaidType, loadConfirmations],
+  );
 
   const scheduleLabel =
     universe === "lostark" ? LOSTARK_SUB_RAID_NAME : aionRaidType === "rudra" ? "루드라" : "바고트";
@@ -510,34 +654,6 @@ export function App() {
               {darkMode ? "라이트" : "다크"}
             </button>
           </div>
-          {lostArkGate ? (
-            <div className="flex w-full max-w-md gap-1 rounded-xl border border-sky-200 bg-white/90 p-1 shadow-sm dark:border-slate-600 dark:bg-slate-800/90">
-              <button
-                type="button"
-                className={[
-                  "min-h-[40px] flex-1 rounded-lg px-3 py-2 text-sm font-medium transition",
-                  universe === "aion"
-                    ? "bg-sky-500 text-white shadow-sm dark:bg-sky-600"
-                    : "text-slate-600 hover:bg-sky-50 dark:text-slate-300 dark:hover:bg-slate-700",
-                ].join(" ")}
-                onClick={() => setUniverse("aion")}
-              >
-                아이온2
-              </button>
-              <button
-                type="button"
-                className={[
-                  "min-h-[40px] flex-1 rounded-lg px-3 py-2 text-sm font-medium transition",
-                  universe === "lostark"
-                    ? "bg-violet-600 text-white shadow-sm dark:bg-violet-500"
-                    : "text-slate-600 hover:bg-violet-50 dark:text-slate-300 dark:hover:bg-slate-700",
-                ].join(" ")}
-                onClick={() => setUniverse("lostark")}
-              >
-                로스트아크
-              </button>
-            </div>
-          ) : null}
           {universe === "aion" ? (
             <div className="flex w-full max-w-md gap-1 rounded-xl border border-sky-200 bg-white/90 p-1 shadow-sm dark:border-slate-600 dark:bg-slate-800/90 sm:gap-2">
               <button
@@ -630,6 +746,19 @@ export function App() {
           </div>
         </aside>
       </div>
+
+      <ScheduleConfirmPanel
+        columns={columns}
+        scheduleLabel={scheduleLabel}
+        raidWeekStartCurrent={raidWeekStartCurrent}
+        raidWeekStartNext={raidWeekStartNext}
+        intersectionKeys={intersectionAll}
+        confirmByWeek={confirmByWeek}
+        canConfirm={canConfirmSchedule}
+        busy={confirmBusy}
+        onConfirm={onConfirmSchedule}
+        onClear={onClearSchedule}
+      />
 
       <section>
         <TimeGrid

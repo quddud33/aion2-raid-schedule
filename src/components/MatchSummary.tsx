@@ -1,11 +1,9 @@
 import {
-  dateKeyLocal,
-  formatMinuteLabel,
   formatRangeLabel,
   groupConsecutive,
   intersectSlots,
   filterSlotsByRaidPhase,
-  parseSlotKey,
+  slotKeyLabel,
 } from "../lib/slots";
 import type { DayColumn } from "../lib/slots";
 
@@ -21,16 +19,6 @@ type Props = {
 
 const card =
   "rounded-2xl border border-sky-200/90 bg-white/85 p-5 shadow-md backdrop-blur-sm dark:border-slate-600 dark:bg-slate-900/80 dark:shadow-lg";
-
-function labelForSlotKey(key: string, columns: DayColumn[]): string {
-  const p = parseSlotKey(key);
-  if (!p) return key;
-  const col = columns.find((c) => dateKeyLocal(c.date) === p.day);
-  const dayPart = col?.short ?? p.day;
-  const start = formatMinuteLabel(p.minutes);
-  const end = formatMinuteLabel(p.minutes + 30);
-  return `${dayPart} ${start}–${end}`;
-}
 
 function overlapChips(keys: string[], week: "current" | "next", chipListClass = "mt-2") {
   const chip =
@@ -129,7 +117,7 @@ export function MatchSummary({ participants, columns }: Props) {
                           key={k}
                           className="border-b border-violet-100/80 px-3 py-1.5 last:border-b-0 dark:border-violet-900/40"
                         >
-                          {labelForSlotKey(k, columns)}
+                          {slotKeyLabel(k, columns)}
                         </li>
                       ))}
                     </ul>

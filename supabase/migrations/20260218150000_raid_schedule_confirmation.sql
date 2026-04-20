@@ -1,61 +1,18 @@
--- Supabase SQL Editor에서 실행
--- 대시보드: Authentication → Providers → Discord 활성화 (Client ID/Secret)
--- Redirect URLs: 로컬·GitHub Pages 배포 URL + Vite base 경로 (예: https://user.github.io/repo/)
---
--- 이미 적용된 DB에서 다시 실행해도 되도록 RLS 정책은 DROP 후 CREATE 합니다.
+-- 일정 확정(raid_type + 레이드 주 수요일 기준) + 확정 권한 Discord 핸들 allowlist
+-- 멘션 봇용: raid_availability.discord_id (Discord snowflake)
 
-create table if not exists public.raid_availability (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users (id) on delete cascade,
-  raid_type text not null check (raid_type in ('rudra', 'bagot', 'lostark')),
-  nickname text not null,
-  avatar_url text null,
-  discord_id text null,
-  slots text[] not null default '{}',
-  updated_at timestamptz not null default now(),
-  unique (user_id, raid_type)
-);
+alter table public.raid_availability
+  add column if not exists discord_id text null;
 
 comment on column public.raid_availability.discord_id is 'Discord 사용자 ID(snowflake). 출발 알림 봇에서 <@id> 멘션용';
 
-create index if not exists raid_availability_raid_type_idx
-  on public.raid_availability (raid_type);
-
-alter table public.raid_availability enable row level security;
-
-drop policy if exists "raid_availability_select_all" on public.raid_availability;
-create policy "raid_availability_select_all"
-  on public.raid_availability for select
-  using (true);
-
-drop policy if exists "raid_availability_insert_own" on public.raid_availability;
-create policy "raid_availability_insert_own"
-  on public.raid_availability for insert
-  with check (auth.uid() = user_id);
-
-drop policy if exists "raid_availability_update_own" on public.raid_availability;
-create policy "raid_availability_update_own"
-  on public.raid_availability for update
-  using (auth.uid() = user_id);
-
-drop policy if exists "raid_availability_delete_own" on public.raid_availability;
-create policy "raid_availability_delete_own"
-  on public.raid_availability for delete
-  using (auth.uid() = user_id);
-
-do $$
-begin
-  alter publication supabase_realtime add table public.raid_availability;
-exception
-  when duplicate_object then null;
-end $$;
-
 -- ---------------------------------------------------------------------------
--- 일정 확정 (마이그레이션 20260218150000 과 동일 개념)
-
 create table if not exists public.raid_schedule_confirm_allowlist (
   discord_username text primary key
 );
+
+comment on table public.raid_schedule_confirm_allowlist is
+  '일정 확정 RPC 허용 Discord 로그인명(소문자 비교 시 preferred_username·name·full_name·global_name 중 하나와 일치)';
 
 insert into public.raid_schedule_confirm_allowlist (discord_username)
 values ('.yongi')
@@ -63,6 +20,7 @@ on conflict (discord_username) do nothing;
 
 revoke all on public.raid_schedule_confirm_allowlist from public;
 
+-- ---------------------------------------------------------------------------
 create table if not exists public.raid_schedule_confirmation (
   raid_type text not null check (raid_type in ('rudra', 'bagot', 'lostark')),
   raid_week_start date not null,
@@ -86,6 +44,7 @@ create policy "raid_schedule_confirmation_select_all"
 revoke insert, update, delete on public.raid_schedule_confirmation from anon;
 revoke insert, update, delete on public.raid_schedule_confirmation from authenticated;
 
+-- ---------------------------------------------------------------------------
 create or replace function public._jwt_schedule_confirm_handles_match()
 returns boolean
 language sql

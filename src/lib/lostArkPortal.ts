@@ -1,5 +1,5 @@
 /**
- * 로스트아크 공용 일정 탭은 아래 둘 중 하나(또는 둘 다)로만 노출됩니다.
+ * 로스트아크 전용 입장(아이온2 탭 없이 로스트아크만)은 아래 둘 중 하나(또는 둘 다)로 판별합니다.
  * - VITE_LOSTARK_ENTRY_PATH: Vite base 뒤 첫 경로 세그먼트 (예: `lostark` → `/repo/lostark`)
  * - VITE_LOSTARK_ENTRY_HASH: location.hash 와 정확히 일치 (예: `#/lostark`)
  *

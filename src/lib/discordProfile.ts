@@ -56,3 +56,17 @@ export function discordAvatarUrl(user: User): string | null {
 
   return null;
 }
+
+/** Discord OAuth provider 의 사용자 snowflake (멘션 `<@id>` 용). 없으면 null */
+export function discordProviderId(user: User): string | null {
+  const identity = user.identities?.find((i) => i.provider === "discord");
+  const idData = (identity?.identity_data ?? {}) as Record<string, unknown>;
+  const sub = typeof idData.sub === "string" ? idData.sub.trim() : "";
+  if (/^\d{5,30}$/.test(sub)) return sub;
+  const meta = user.user_metadata ?? {};
+  const pid = typeof meta.provider_id === "string" ? meta.provider_id.trim() : "";
+  if (/^\d{5,30}$/.test(pid)) return pid;
+  const id = identity?.id;
+  if (typeof id === "string" && /^\d{5,30}$/.test(id.trim())) return id.trim();
+  return null;
+}
