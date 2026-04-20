@@ -368,6 +368,20 @@ npm -v
     sudo dnf install -y nodejs
     ```
 
+  - **스왑을 8GB로 잡는 예시** (`df -h /` 로 **Avail이 8GB 이상** 남았는지 확인 후. 이미 `/swapfile` 이 있으면 아래에서 먼저 끄고 지움):
+
+    ```bash
+    sudo swapoff /swapfile 2>/dev/null || true
+    sudo rm -f /swapfile
+    sudo sed -i '\|/swapfile|d' /etc/fstab
+    sudo fallocate -l 8G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+    free -h
+    ```
+
   - **대응 2:** 아래 **§6-1 tarball** 로 설치(`dnf` 거의 안 씀).
 
 ### 6-0. 설치됐는지 확인
