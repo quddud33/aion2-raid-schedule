@@ -12,7 +12,7 @@
  * 겹침: `/raid_overlap` (레이드별 웹 전원, 멘션 없음) · 주사위: `/dice` (1~100, 채널에 멘션)
  * 슈상보: `/sugo_ping` — 짝수 시 정각(06~08시 제외) 등록 채널에서 멘션
  * 파티: `/party_recruit` — 최대 8인, 버튼으로 출발·해체·가입·탈퇴
- * 알람: `/remind` 또는 채팅 `알람 1시간 10분 10초 뒤` 등 복합 시간 합산 / `@봇`+시간 문장
+ * 알람: `/remind` · 채팅 파싱은 `REMIND_CHAT_ENABLED=1`+Portal Message Content 시 `알람 …`/`@봇 …`
  *
  * 부하 완화: 미래 확정 일정 없으면 레이드 틱 조기 종료 / 가능시간 DB 1회만 조회 /
  * 전송 기록 파일 주기적 정리·실제 알림 보낼 때만 state 저장 (자세한 건 로그 `[최적화]`)
@@ -65,6 +65,20 @@ const REMIND_MAX_PER_USER = Math.max(1, Math.min(50, Number(process.env.REMIND_M
 const REMIND_MSG_PREFIX = Object.prototype.hasOwnProperty.call(process.env, "REMIND_MSG_PREFIX")
   ? String(process.env.REMIND_MSG_PREFIX ?? "")
   : "알람";
+
+function envFlagTruthy(name) {
+  const v = String(process.env[name] ?? "")
+    .trim()
+    .toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
+/**
+ * 채팅 본문 알람에 `GuildMessages` + `MessageContent` 가 필요함.
+ * Portal에서 Message Content Intent 를 켜지 않으면 `Used disallowed intents` 로 종료되므로 기본은 끔.
+ * 켜려면: `REMIND_CHAT_ENABLED=1` + Developer Portal → Bot → Message Content Intent ON
+ */
+const REMIND_CHAT_ENABLED = envFlagTruthy("REMIND_CHAT_ENABLED");
 
 let gAlarmState = { alarms: [] };
 /** @type {Map<string, NodeJS.Timeout>} */
@@ -1898,21 +1912,25 @@ async function main() {
   console.log(
     `[슈상보] 짝수 시 정각 멘션(06·07·08시 제외) — 시각: ${[...SUGO_MERCHANT_HOURS].sort((a, b) => a - b).join(", ")}`,
   );
-  console.log(
-    `[알람 채팅] 접두 "${REMIND_MSG_PREFIX || "(없음·봇멘션만)"}" · Developer Portal에서 **Message Content Intent** 켜야 채팅 파싱 동작`,
-  );
+  if (REMIND_CHAT_ENABLED) {
+    console.log(
+      `[알람 채팅] 켜짐 · 접두 "${REMIND_MSG_PREFIX || "(없음·봇멘션만)"}" · Portal **Message Content Intent** 필수`,
+    );
+  } else {
+    console.log(
+      `[알람 채팅] 끔 — 채팅 파싱·메시지 인텐트 미사용. 켜려면 REMIND_CHAT_ENABLED=1 + Portal Message Content Intent (/remind 슬래시는 그대로 동작)`,
+    );
+  }
 
   const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  const client = new Client({
-    intents: [
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildMessages,
-      GatewayIntentBits.MessageContent,
-    ],
-  });
+  const gatewayIntents = [GatewayIntentBits.Guilds];
+  if (REMIND_CHAT_ENABLED) {
+    gatewayIntents.push(GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent);
+  }
+  const client = new Client({ intents: gatewayIntents });
   await client.login(TOKEN);
   console.log(`[Discord] 로그인: ${client.user?.tag}`);
 
@@ -1935,13 +1953,15 @@ async function main() {
         console.error("[Discord] GuildCreate 슬래시 등록 실패:", e?.message ?? e);
       }
     });
-    client.on(Events.MessageCreate, async (message) => {
-      try {
-        await handleRemindMessageCreate(message, client);
-      } catch (e) {
-        console.error("[message remind]", e?.message ?? e);
-      }
-    });
+    if (REMIND_CHAT_ENABLED) {
+      client.on(Events.MessageCreate, async (message) => {
+        try {
+          await handleRemindMessageCreate(message, client);
+        } catch (e) {
+          console.error("[message remind]", e?.message ?? e);
+        }
+      });
+    }
     client.on(Events.InteractionCreate, async (interaction) => {
       try {
         if (interaction.isButton() && interaction.customId?.startsWith("party:")) {
