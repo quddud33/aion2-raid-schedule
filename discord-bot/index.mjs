@@ -36,19 +36,26 @@ import {
 } from "discord.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 if (process.env.REMIND_TZ) {
   process.env.TZ = process.env.REMIND_TZ;
 }
 
+/** `npm start` cwd와 무관하게 동일 경로에 상태 저장 (systemd 등) */
+const __botDir = dirname(fileURLToPath(import.meta.url));
 const TOKEN = process.env.DISCORD_BOT_TOKEN ?? "";
 const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
-const STATE_PATH = resolve(process.env.SENT_STATE_PATH ?? "./sent-reminders.json");
+const STATE_PATH = process.env.SENT_STATE_PATH
+  ? resolve(process.env.SENT_STATE_PATH)
+  : resolve(__botDir, "sent-reminders.json");
 /** `/remind` 예약 목록 (봇 재시작 시 복구) */
-const ALARM_STATE_PATH = resolve(process.env.REMIND_ALARM_PATH ?? "./pending-alarms.json");
+const ALARM_STATE_PATH = process.env.REMIND_ALARM_PATH
+  ? resolve(process.env.REMIND_ALARM_PATH)
+  : resolve(__botDir, "pending-alarms.json");
 /** 저사양 VM: 90~120초 권장(부하·OOM 완화). 기본 60초 유지 */
 const POLL_MS = Number(process.env.POLL_INTERVAL_MS ?? 60_000);
 const REMIND_DAY_HOUR = Math.min(23, Math.max(0, Number(process.env.REMIND_DAY_HOUR ?? 6) || 6));
@@ -60,6 +67,9 @@ const STATE_PRUNE_SUGO_DAYS = Math.max(3, Number(process.env.STATE_PRUNE_SUGO_DA
 const REMIND_MIN_MS = Math.max(1_000, Number(process.env.REMIND_MIN_MS ?? 5_000) || 5_000);
 const REMIND_MAX_MS = Math.max(REMIND_MIN_MS, Number(process.env.REMIND_MAX_MS ?? 604_800_000) || 604_800_000);
 const REMIND_MAX_PER_USER = Math.max(1, Math.min(50, Number(process.env.REMIND_MAX_PER_USER ?? 10) || 10));
+/** 채널 전송 실패(권한·네트워크) 시 재시도 횟수·간격 */
+const REMIND_SEND_MAX_RETRY = Math.max(1, Math.min(40, Number(process.env.REMIND_SEND_MAX_RETRY ?? 12) || 12));
+const REMIND_SEND_RETRY_MS = Math.max(5_000, Number(process.env.REMIND_SEND_RETRY_MS ?? 15_000) || 15_000);
 
 /** 채팅 알람: 이 문자로 시작하면 파싱 시도. `.env`에서 `REMIND_MSG_PREFIX=` 로 비우면 **봇 멘션만** 트리거 */
 const REMIND_MSG_PREFIX = Object.prototype.hasOwnProperty.call(process.env, "REMIND_MSG_PREFIX")
@@ -252,13 +262,17 @@ function clearRemindTimer(id) {
   gAlarmTimers.delete(id);
 }
 
+/** @returns {Promise<boolean>} */
 async function sendRemindAlarmMessage(alarm) {
-  if (!gAlarmClient) return;
+  if (!gAlarmClient) {
+    console.error("[알람] 내부 오류: 클라이언트 없음");
+    return false;
+  }
   try {
     const ch = await gAlarmClient.channels.fetch(alarm.channelId);
     if (!ch?.isTextBased?.()) {
       console.warn(`[알람] 채널을 열 수 없음: ${alarm.channelId}`);
-      return;
+      return false;
     }
     const label = typeof alarm.labelKo === "string" && alarm.labelKo ? alarm.labelKo : "알람";
     const lines = ["⏰ **알람 시간이에요**", `<@${alarm.targetUserId}>`, `_(${label} · 등록: <@${alarm.createdById}>)_`];
@@ -267,9 +281,11 @@ async function sendRemindAlarmMessage(alarm) {
       allowedMentions: { users: [alarm.targetUserId, alarm.createdById].filter(Boolean) },
     });
     console.log(`[알람 발송] 채널=${alarm.channelId} 대상=${alarm.targetUserId} (${alarm.labelKo ?? ""})`);
+    return true;
   } catch (e) {
     const code = e?.code ?? e?.status;
     console.error("[알람 전송 실패]", code != null ? `code=${code}` : "", e?.message ?? e);
+    return false;
   }
 }
 
@@ -278,9 +294,29 @@ async function fireRemindAlarm(alarmId) {
   const idx = gAlarmState.alarms.findIndex((a) => a.id === alarmId);
   if (idx < 0) return;
   const alarm = gAlarmState.alarms[idx];
-  gAlarmState.alarms.splice(idx, 1);
+  const ok = await sendRemindAlarmMessage(alarm);
+  if (ok) {
+    gAlarmState.alarms.splice(idx, 1);
+    await persistAlarmState().catch((e) => console.error("[알람 저장]", e?.message ?? e));
+    return;
+  }
+  const n = (alarm.remindRetryCount ?? 0) + 1;
+  if (n > REMIND_SEND_MAX_RETRY) {
+    gAlarmState.alarms.splice(idx, 1);
+    await persistAlarmState().catch((e) => console.error("[알람 저장]", e?.message ?? e));
+    console.error(
+      `[알람] ${REMIND_SEND_MAX_RETRY}회 전송 실패로 예약 취소 (채널 권한·봇 역할 확인) ch=${alarm.channelId}`,
+    );
+    return;
+  }
+  alarm.remindRetryCount = n;
+  alarm.dueAt = Date.now() + REMIND_SEND_RETRY_MS;
+  gAlarmState.alarms[idx] = alarm;
   await persistAlarmState().catch((e) => console.error("[알람 저장]", e?.message ?? e));
-  await sendRemindAlarmMessage(alarm);
+  scheduleRemindTimer(alarm);
+  console.warn(
+    `[알람] 전송 실패 → ${Math.round(REMIND_SEND_RETRY_MS / 1000)}초 후 재시도 (${n}/${REMIND_SEND_MAX_RETRY}) ch=${alarm.channelId}`,
+  );
 }
 
 function scheduleRemindTimer(alarm) {
@@ -311,14 +347,28 @@ async function initRemindSystem(client) {
   const overdue = gAlarmState.alarms.filter((a) => a.dueAt <= now);
   gAlarmState.alarms = gAlarmState.alarms.filter((a) => a.dueAt > now);
   await persistAlarmState().catch((e) => console.error("[알람 초기 저장]", e?.message ?? e));
+  let overdueSent = 0;
+  let overdueRetry = 0;
   for (const a of overdue) {
-    await sendRemindAlarmMessage(a);
+    const ok = await sendRemindAlarmMessage(a);
+    if (ok) {
+      overdueSent++;
+    } else {
+      a.remindRetryCount = (a.remindRetryCount ?? 0) + 1;
+      a.dueAt = Date.now() + REMIND_SEND_RETRY_MS;
+      gAlarmState.alarms.push(a);
+      await persistAlarmState().catch((e) => console.error("[알람 저장]", e?.message ?? e));
+      overdueRetry++;
+    }
   }
   for (const a of gAlarmState.alarms) {
     scheduleRemindTimer(a);
   }
-  if (overdue.length) {
-    console.log(`[알람] 재시작 후 지난 예약 ${overdue.length}건 즉시 전송`);
+  if (overdueSent) {
+    console.log(`[알람] 재시작 후 즉시 전송 ${overdueSent}건`);
+  }
+  if (overdueRetry) {
+    console.warn(`[알람] 재시작 시 전송 실패 ${overdueRetry}건 → ${Math.round(REMIND_SEND_RETRY_MS / 1000)}초 후 재시도 예약`);
   }
 }
 
@@ -1922,7 +1972,7 @@ async function main() {
 
   const raidDesc = RAID_ALLOWED ? [...RAID_ALLOWED].sort().join(", ") : "rudra + bagot + lostark (전체)";
   console.log(
-    `[설정] TZ=${process.env.TZ ?? "(기본)"} STATE=${STATE_PATH} POLL=${POLL_MS}ms 당일=${REMIND_DAY_HOUR}시 알림대상=${raidDesc} .env기본채널=${CHANNEL_ID}`,
+    `[설정] TZ=${process.env.TZ ?? "(기본)"} STATE=${STATE_PATH} ALARM_STATE=${ALARM_STATE_PATH} POLL=${POLL_MS}ms 당일=${REMIND_DAY_HOUR}시 알림대상=${raidDesc} .env기본채널=${CHANNEL_ID}`,
   );
   console.log(
     `[최적화] 레이드 알림=가능시간 1회 조회·인덱스 / 상태정리 raid≥${STATE_PRUNE_RAID_DAYS}일 sugo≥${STATE_PRUNE_SUGO_DAYS}일 / 전송 시에만 state 저장`,
