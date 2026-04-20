@@ -7,7 +7,8 @@
   },
   "scripts": {
     "start": "node index.mjs",
-    "check": "node index.mjs --once"
+    "check": "node index.mjs --once",
+    "test-notify": "node index.mjs --test-send"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",

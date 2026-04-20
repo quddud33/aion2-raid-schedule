@@ -62,12 +62,12 @@
 Supabase에 테이블 `discord_reminder_channel_config` 가 있어야 합니다(SQL Editor에 `supabase/migrations/20260420180000_discord_reminder_channel_config.sql` 실행 또는 CLI 마이그레이션).
 
 1. 봇을 **§2**처럼 `applications.commands` 포함해 서버에 넣습니다.  
-2. `.env`에 **`DISCORD_GUILD_ID`**(서버 ID, 개발자 모드로 복사)를 넣으면 슬래시 명령이 **즉시** 등록됩니다. 비우면 **글로벌** 등록이라 반영까지 **최대 수십 분** 걸릴 수 있습니다.  
-3. 서버에서 **서버 관리(Manage Server)** 권한이 있는 계정으로:
+2. 봇을 **켜면(`npm start`)** 봇이 들어가 있는 **서버마다** `/raid_notify` 가 **길드 명령**으로 등록됩니다. (`.env`의 서버 ID는 필요 없습니다.) 나중에 **다른 서버에 초대**하면 그 서버에도 자동으로 등록됩니다.  
+3. 서버에서:
 
-   - `/raid_notify set` — `target`(전체 기본 / 루드라 / 바고트 / 로스트아크) + `channel`(텍스트 채널)  
-   - `/raid_notify status` — DB에 저장된 채널 요약  
-   - `/raid_notify clear` — DB 값 삭제(해당 항목은 다시 `.env` 기준)
+   - **`/raid_notify help`** — 이 봇이 제공하는 슬래시 하위 명령 설명 (서버 관리 권한 **불필요**).  
+   - **`/raid_notify test`** — 알림으로 쓰는 **채널에 테스트 글** + **명령을 친 사람 멘션** (서버 관리 권한 **불필요**). `raid_route`로 기본/루드라/바고트/로아 라우팅 선택.  
+   - **`/raid_notify set` / `status` / `clear`** — **서버 관리(Manage Server)** 권한 필요. `set`은 `target` + 텍스트 `channel`, `status`는 DB 요약, `clear`는 DB 삭제.
 
 **우선순위(높은 것 먼저):** DB 타입별 채널 → `.env`의 `DISCORD_CHANNEL_ID_*` → DB 기본 → `.env`의 `DISCORD_CHANNEL_ID`.
 
@@ -109,7 +109,6 @@ Supabase에 테이블 `discord_reminder_channel_config` 가 있어야 합니다(
    - `DISCORD_BOT_TOKEN` — 1절에서 복사한 봇 토큰  
    - `DISCORD_CHANNEL_ID` — 3절 **기본** 채널 ID (루드라·바고트·로아 공통, 또는 타입별 ID를 안 넣을 때)  
    - (선택) `DISCORD_CHANNEL_ID_RUDRA` / `DISCORD_CHANNEL_ID_BAGOT` / `DISCORD_CHANNEL_ID_LOSTARK` — 타입별 채널  
-   - (선택) `DISCORD_GUILD_ID` — 서버 ID. 넣으면 `/raid_notify` 슬래시 명령이 바로 보임  
    - `SUPABASE_URL` — Supabase Project URL  
    - `SUPABASE_SERVICE_ROLE_KEY` — service_role secret  
    - `REMIND_TZ=Asia/Seoul` — 한국에서 쓰면 그대로 두면 됩니다.  
@@ -129,6 +128,11 @@ Supabase에 테이블 `discord_reminder_channel_config` 가 있어야 합니다(
    ```powershell
    npm run check
    ```
+
+   **채널에 테스트 글을 실제로 올려보기**
+
+   - **디스코드(권장):** `/raid_notify test` — **명령을 친 사람**에게 멘션이 갑니다. `raid_route`로 기본/루드라/바고트/로아 라우팅을 골라 채널을 맞출 수 있습니다.  
+   - **터미널:** `npm run test-notify` — 채널로만 테스트. 본인 멘션까지 보려면 `.env`에 `TEST_NOTIFY_DISCORD_ID` 를 넣습니다.
 
 8. **상시 실행:**
 
@@ -230,7 +234,7 @@ Supabase에 테이블 `discord_reminder_channel_config` 가 있어야 합니다(
 | 멘션이 안 됨 | 해당 유저가 `discord_id` 없이 저장됐을 수 있습니다. 웹에서 저장 다시. |
 | 시간이 9시간 어긋남 | `.env`에 `REMIND_TZ=Asia/Seoul` 이 있는지, 봇을 돌리는 PC/OS 타임존을 확인합니다. |
 | Supabase 오류 | 마이그레이션 적용 여부, `service_role` 키 오타, URL 오타. |
-| `/raid_notify` 가 안 보임 | 초대 URL에 **`applications.commands`** 포함, `DISCORD_GUILD_ID` 후 봇 재시작, 마이그레이션 `20260420180000` 적용 여부. |
+| `/raid_notify` 가 안 보임 | 초대 URL에 **`applications.commands`** 포함, 봇 **재시작** 후 잠시 대기, 마이그레이션 `20260420180000` 적용 여부. (서버에 봇이 실제로 들어가 있어야 길드 등록이 됩니다.) |
 
 ---
 

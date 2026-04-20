@@ -6,6 +6,8 @@
  *
  * 실행: npm install 후 .env 복사·채우고 → npm start
  * 한 번만 점검: npm run check
+ * 채널에 테스트 글: `/raid_notify test`(실행자 멘션) 또는 npm run test-notify
+ * 명령 안내: `/raid_notify help`
  */
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
@@ -31,7 +33,6 @@ const TOKEN = process.env.DISCORD_BOT_TOKEN ?? "";
 const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
-const DISCORD_GUILD_ID = (process.env.DISCORD_GUILD_ID ?? "").trim();
 const STATE_PATH = resolve(process.env.SENT_STATE_PATH ?? "./sent-reminders.json");
 const POLL_MS = Number(process.env.POLL_INTERVAL_MS ?? 60_000);
 const REMIND_DAY_HOUR = Math.min(23, Math.max(0, Number(process.env.REMIND_DAY_HOUR ?? 6) || 6));
@@ -155,6 +156,20 @@ const TARGET_CHOICES = [
   { name: "로스트아크", value: "lostark" },
 ];
 
+const SLASH_HELP_KO = [
+  "**출발 알림 봇 — `/raid_notify` 명령**",
+  "",
+  "• `help` — 이 안내 (누구나)",
+  "• `test` — 알림으로 쓰는 **채널에 테스트 글** + **명령 실행자 멘션** (누구나). 옵션 `raid_route`: 기본 / 루드라 / 바고트 / 로아 라우팅",
+  "• `set` — **서버 관리** 권한 필요. DB에 채널 저장 (`target` + `channel`)",
+  "• `status` — **서버 관리** 권한. DB에 저장된 채널 요약",
+  "• `clear` — **서버 관리** 권한. DB 값 삭제 → 다시 `.env` 의 `DISCORD_CHANNEL_ID*` 기준",
+  "",
+  "**채널이 정해지는 순서** (앞이 우선): DB 타입별 → `.env` 의 `DISCORD_CHANNEL_ID_RUDRA` 등 → DB 기본 → `.env` 의 `DISCORD_CHANNEL_ID`",
+  "",
+  "**자동 알림:** 웹에서 확정된 일정 기준, 당일 지정 시각·출발 30분 전에 위 채널로 전송 (봇 프로세스가 켜져 있을 때).",
+].join("\n");
+
 function buildSlashCommands() {
   return [
     new SlashCommandBuilder()
@@ -181,6 +196,23 @@ function buildSlashCommands() {
       )
       .addSubcommand((sc) =>
         sc
+          .setName("test")
+          .setDescription("알림 채널로 테스트 전송 (실행한 사람에게 멘션)")
+          .addStringOption((o) =>
+            o
+              .setName("raid_route")
+              .setDescription("어느 경로로 채널 ID를 고를지")
+              .setRequired(false)
+              .addChoices(
+                { name: "기본 채널만(DB·env)", value: "default" },
+                { name: "루드라 라우팅", value: "rudra" },
+                { name: "바고트 라우팅", value: "bagot" },
+                { name: "로스트아크 라우팅", value: "lostark" },
+              ),
+          ),
+      )
+      .addSubcommand((sc) =>
+        sc
           .setName("status")
           .setDescription("지금 저장된 채널(DB) 보기")
           .addStringOption((o) =>
@@ -203,11 +235,13 @@ function buildSlashCommands() {
               .addChoices(...TARGET_CHOICES, { name: "전부", value: "all" }),
           ),
       )
+      .addSubcommand((sc) => sc.setName("help").setDescription("이 봇 슬래시 명령 안내 (누구나)"))
       .toJSON(),
   ];
 }
 
-async function registerSlashCommands(client) {
+/** 봇이 들어가 있는 **각 디스코드 서버**에 길드 전용 슬래시 명령 등록 */
+async function registerSlashCommandsOnAllGuilds(client) {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
   const appId = client.application?.id;
   if (!appId) {
@@ -215,13 +249,32 @@ async function registerSlashCommands(client) {
     return;
   }
   const body = buildSlashCommands();
-  if (DISCORD_GUILD_ID) {
-    await rest.put(Routes.applicationGuildCommands(appId, DISCORD_GUILD_ID), { body });
-    console.log(`[Discord] 슬래시 /raid_notify 등록됨 (길드 ${DISCORD_GUILD_ID})`);
-  } else {
+  const guilds = [...client.guilds.cache.values()];
+  if (guilds.length === 0) {
+    console.warn(
+      "[Discord] 참가 중인 서버가 없어 **글로벌** 슬래시로 등록합니다. (봇을 서버에 초대한 뒤 재시작하면 길드별로 다시 등록됩니다.)",
+    );
     await rest.put(Routes.applicationCommands(appId), { body });
-    console.log("[Discord] 슬래시 /raid_notify 글로벌 등록 (반영까지 최대 수십 분 걸릴 수 있음)");
+    return;
   }
+  for (const g of guilds) {
+    try {
+      await rest.put(Routes.applicationGuildCommands(appId, g.id), { body });
+      console.log(`[Discord] 슬래시 /raid_notify 등록: ${g.name} (${g.id})`);
+    } catch (e) {
+      console.error(`[Discord] 슬래시 등록 실패 (${g.name} / ${g.id}):`, e?.rawError?.message ?? e?.message ?? e);
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+}
+
+async function registerSlashCommandsForGuild(client, guildId, guildName = "") {
+  const rest = new REST({ version: "10" }).setToken(TOKEN);
+  const appId = client.application?.id;
+  if (!appId) return;
+  const body = buildSlashCommands();
+  await rest.put(Routes.applicationGuildCommands(appId, guildId), { body });
+  console.log(`[Discord] 슬래시 /raid_notify 등록 (신규 서버): ${guildName || guildId} (${guildId})`);
 }
 
 function baseConfigRow(existing) {
@@ -241,10 +294,65 @@ function formatCh(id) {
 }
 
 async function handleRaidNotifyInteraction(supabase, interaction) {
+  const sub = interaction.options.getSubcommand();
+
+  if (sub === "help") {
+    await interaction.reply({ content: SLASH_HELP_KO, ephemeral: true });
+    return;
+  }
+
   if (!interaction.inGuild()) {
     await interaction.reply({ content: "서버 안에서만 사용할 수 있습니다.", ephemeral: true });
     return;
   }
+
+  if (sub === "test") {
+    let cfg = null;
+    try {
+      cfg = await fetchReminderChannelConfig(supabase);
+    } catch (e) {
+      console.warn("[raid_notify test]", e?.message ?? e);
+    }
+    const route = (interaction.options.getString("raid_route") ?? "rudra").trim().toLowerCase();
+    let targetCid;
+    if (route === "default") {
+      targetCid = effectiveDefaultChannelId(cfg);
+    } else if (RAID_TYPES.includes(route)) {
+      targetCid = channelIdForRaidType(route, cfg);
+    } else {
+      await interaction.reply({ content: "raid_route 값이 올바르지 않습니다.", ephemeral: true });
+      return;
+    }
+    let ch;
+    try {
+      ch = await interaction.client.channels.fetch(targetCid);
+    } catch {
+      ch = null;
+    }
+    if (!ch?.isTextBased()) {
+      await interaction.reply({
+        content: `채널을 열 수 없습니다 (\`${targetCid}\`). 봇이 그 채널에 접근 가능한지·ID를 확인해 주세요.`,
+        ephemeral: true,
+      });
+      return;
+    }
+    const uid = interaction.user.id;
+    const content = [
+      "**[레이드 알림 · 테스트]**",
+      `실행: **${interaction.user.tag}**`,
+      `raid_route: \`${route}\` → <#${targetCid}>`,
+      `시각(로컬): **${formatKo(new Date())}**`,
+      `<@${uid}>`,
+    ].join("\n");
+    await ch.send({ content, allowedMentions: { users: [uid] } });
+    await interaction.reply({
+      content: `테스트 메시지를 ${formatCh(targetCid)} 에 보냈고, <@${uid}> 님을 멘션했습니다.`,
+      ephemeral: true,
+      allowedMentions: { users: [uid] },
+    });
+    return;
+  }
+
   const canManage = interaction.member?.permissions?.has?.(PermissionFlagsBits.ManageGuild);
   if (!canManage) {
     await interaction.reply({
@@ -253,8 +361,6 @@ async function handleRaidNotifyInteraction(supabase, interaction) {
     });
     return;
   }
-
-  const sub = interaction.options.getSubcommand();
 
   if (sub === "set") {
     const target = interaction.options.getString("target", true);
@@ -355,6 +461,49 @@ async function handleRaidNotifyInteraction(supabase, interaction) {
       ephemeral: true,
     });
   }
+}
+
+/** 실제 알림 없이 채널·토큰·권한만 확인 (`npm run test-notify`) */
+async function runTestSend(client, supabase) {
+  let cfg = null;
+  try {
+    cfg = await fetchReminderChannelConfig(supabase);
+  } catch (e) {
+    console.warn("[테스트] discord_reminder_channel_config 읽기 실패 — .env 채널만 사용:", e?.message ?? e);
+  }
+  const effectiveDefaultId = effectiveDefaultChannelId(cfg);
+  const testRaidType = (process.env.TEST_NOTIFY_RAID_TYPE ?? "rudra").trim().toLowerCase();
+  if (!RAID_TYPES.includes(testRaidType)) {
+    console.error("[오류] TEST_NOTIFY_RAID_TYPE 은 rudra, bagot, lostark 중 하나여야 합니다.");
+    process.exit(1);
+  }
+  const targetCid = channelIdForRaidType(testRaidType, cfg);
+  const ch = await client.channels.fetch(targetCid);
+  if (!ch?.isTextBased()) {
+    console.error(`[오류] 채널을 열 수 없거나 텍스트 채널이 아닙니다. id=${targetCid}`);
+    process.exit(1);
+  }
+  const mention = (process.env.TEST_NOTIFY_DISCORD_ID ?? "").trim();
+  const lines = [
+    "**[레이드 알림 · 테스트]**",
+    `raid_type(라우팅용): \`${testRaidType}\``,
+    `전송 채널 ID: \`${targetCid}\``,
+    `기본 폴백 ID: \`${effectiveDefaultId}\``,
+    `시각(로컬): **${formatKo(new Date())}**`,
+  ];
+  if (mention && /^\d{5,30}$/.test(mention)) {
+    lines.push(`멘션 테스트: <@${mention}>`);
+    await ch.send({
+      content: lines.join("\n"),
+      allowedMentions: { users: [mention] },
+    });
+  } else {
+    lines.push(
+      "(멘션 없음) 디스코드에서 **`/raid_notify test`** 를 쓰면 실행한 사람에게 멘션됩니다. 터미널 테스트만 쓸 때는 `.env`의 `TEST_NOTIFY_DISCORD_ID=숫자`",
+    );
+    await ch.send({ content: lines.join("\n") });
+  }
+  console.log(`[테스트] 전송 완료 → 채널 ${targetCid}`);
 }
 
 async function runTick(client, supabase, state) {
@@ -473,7 +622,7 @@ async function main() {
 
   const raidDesc = RAID_ALLOWED ? [...RAID_ALLOWED].sort().join(", ") : "rudra + bagot + lostark (전체)";
   console.log(
-    `[설정] TZ=${process.env.TZ ?? "(기본)"} STATE=${STATE_PATH} POLL=${POLL_MS}ms 당일=${REMIND_DAY_HOUR}시 알림대상=${raidDesc} .env기본채널=${CHANNEL_ID}${DISCORD_GUILD_ID ? ` GUILD=${DISCORD_GUILD_ID}` : ""}`,
+    `[설정] TZ=${process.env.TZ ?? "(기본)"} STATE=${STATE_PATH} POLL=${POLL_MS}ms 당일=${REMIND_DAY_HOUR}시 알림대상=${raidDesc} .env기본채널=${CHANNEL_ID}`,
   );
 
   const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
@@ -485,9 +634,23 @@ async function main() {
   console.log(`[Discord] 로그인: ${client.user?.tag}`);
 
   const once = process.argv.includes("--once");
+  const testSend = process.argv.includes("--test-send");
+
+  if (testSend) {
+    await runTestSend(client, supabase);
+    await client.destroy();
+    process.exit(0);
+  }
 
   if (!once) {
-    await registerSlashCommands(client);
+    await registerSlashCommandsOnAllGuilds(client);
+    client.on(Events.GuildCreate, async (guild) => {
+      try {
+        await registerSlashCommandsForGuild(client, guild.id, guild.name);
+      } catch (e) {
+        console.error("[Discord] GuildCreate 슬래시 등록 실패:", e?.message ?? e);
+      }
+    });
     client.on(Events.InteractionCreate, async (interaction) => {
       if (!interaction.isChatInputCommand() || interaction.commandName !== "raid_notify") return;
       try {
