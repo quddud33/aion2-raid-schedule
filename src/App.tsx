@@ -11,6 +11,9 @@ type AionRaidType = "rudra" | "bagot";
 type DbRaidType = AionRaidType | "lostark";
 type Universe = "aion" | "lostark";
 
+/** 로스트아크 쪽 UI에 쓰는 레이드 이름 (DB raid_type 값 `lostark` 와 별개) */
+const LOSTARK_RAID_DISPLAY_NAME = "익기르 나메";
+
 type AvailabilityRow = {
   id: string;
   user_id: string;
@@ -367,14 +370,15 @@ export function App() {
   };
 
   const scheduleLabel =
-    universe === "lostark" ? "로스트아크 (공용)" : aionRaidType === "rudra" ? "루드라" : "바고트";
+    universe === "lostark" ? LOSTARK_RAID_DISPLAY_NAME : aionRaidType === "rudra" ? "루드라" : "바고트";
 
-  const pageTitle = universe === "lostark" ? "로스트아크 · 레이드 일정" : "아이온2 성역 일정";
+  const pageTitle =
+    universe === "lostark" ? `${LOSTARK_RAID_DISPLAY_NAME} · 일정 맞추기` : "아이온2 성역 일정";
   const pageBadge =
-    universe === "lostark" ? "Lost Ark · 공용" : "Aion 2 · 성역(레이드)";
+    universe === "lostark" ? `Lost Ark · ${LOSTARK_RAID_DISPLAY_NAME}` : "Aion 2 · 성역(레이드)";
   const pageIntro =
     universe === "lostark"
-      ? "공용 레이드 일정 맞추기입니다. 달력 규칙(수요일 기준 금주·차주)은 아이온2 성역과 같습니다."
+      ? `${LOSTARK_RAID_DISPLAY_NAME} 레이드 일정을 맞춥니다. 달력 규칙(수요일 기준 금주·차주)은 아이온2 성역과 같습니다.`
       : "루드라 / 바고트 레이드별로 가능한 시간을 표시합니다. 달력은 수요일 초기화 기준 금주·차주(각 7일)입니다.";
 
   const sessionAvatarUrl = sessionUser ? discordAvatarUrl(sessionUser) : null;
@@ -530,7 +534,7 @@ export function App() {
                 ].join(" ")}
                 onClick={() => setUniverse("lostark")}
               >
-                로스트아크
+                {LOSTARK_RAID_DISPLAY_NAME}
               </button>
             </div>
           ) : null}

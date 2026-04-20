@@ -1,4 +1,4 @@
-아이온2 / 로스트아크 공용 일정 — GitHub Pages + Supabase 설정
+아이온2 / 로스트아크(익기르 나메) 공용 일정 — GitHub Pages + Supabase 설정
 
 
 
@@ -160,14 +160,22 @@
 
 
 
-5) 로스트아크 탭
+5) 로스트아크(익기르 나메) 탭 — 어떻게 접근하나요?
 
-   - VITE_LOSTARK_ENTRY_PATH 또는 VITE_LOSTARK_ENTRY_HASH 가 설정된 경우에만, 해당 주소로 들어온 브라우저에서
+   - 빌드·배포 시 `.env` 또는 GitHub Actions 시크릿에 **둘 중 하나 이상**을 넣습니다. (`.env.example` 참고)
 
-     헤더에「아이온2 | 로스트아크」전환이 보입니다. 비밀 경로를 아는 사람만 로스트아크 공용 슬롯(raid_type=lostark)에
+       * `VITE_LOSTARK_ENTRY_PATH=lostark`  → Vite `base` 뒤 **첫 경로**가 `lostark`일 때만 탭 노출
 
-     접근할 수 있습니다.
+       * 또는 `VITE_LOSTARK_ENTRY_HASH=#/lostark`  → 주소의 **해시**가 정확히 `#/lostark`일 때만 탭 노출
 
-   - 둘 다 비우면 아이온2(루드라/바고트)만 제공됩니다.
+   - **경로로 입장** 예: `https://내계정.github.io/저장소이름/lostark` (로컬은 `http://localhost:5173/lostark`)
+
+   - **해시로 입장** 예: `https://내계정.github.io/저장소이름/#/lostark`
+
+   - 위 조건으로 들어온 브라우저에서만 헤더에「아이온2 | 익기르 나메」전환이 보이고, DB의 `raid_type=lostark`
+
+     슬롯과 연결됩니다. (UI 표시명은 익기르 나메, 저장 값은 `lostark` 그대로입니다.)
+
+   - `VITE_LOSTARK_ENTRY_PATH` 와 `VITE_LOSTARK_ENTRY_HASH` 를 **둘 다 비우면** 아이온2(루드라/바고트)만 제공됩니다.
 
 
