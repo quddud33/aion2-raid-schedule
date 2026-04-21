@@ -11,7 +11,7 @@
  * 명령 안내: `/raid_notify help` · 관리자 알림 시각: `/raid_notify timings`
  * 내 가능 시간: `/raid_my_schedule` (금주·차주 14일만, 날짜별·연속 구간 묶음)
  * 겹침: `/raid_overlap` (레이드별 웹 전원, 멘션 없음) · 주사위: `/dice` (1~100, 채널에 멘션)
- * 슈상보: `/sugo_ping` — 짝수 시 정각 **1분 전**(06~08시 제외) 등록 채널에서 멘션
+ * 슈상보: `/sugo_ping` — 짝수 시 **xx:59~정각**(06~08시 제외) 등록 채널에서 멘션
  * 파티: `/party_recruit` — 최대 8인, 버튼으로 출발·해체·가입·탈퇴
  * 알람: `/remind`(`reason` 선택) · 취소 `/remind_cancel` · 채팅 `알람 …`/`사유:`/`(메모)`/`알람 해제`/`@봇 …`
  * `@봇 구버지` / `@봇 명령어`·`도움말`: `REMIND_CHAT_ENABLED=1` 이거나 `BOT_AT_COMMANDS_ENABLED=1` 일 때 (Message Content Intent 필요)
@@ -736,6 +736,7 @@ function buildNotifyTimingsHelpText() {
     "· **출발 30분 전 알림:** 출발 시각 **정확히 30분 전** (코드 고정).",
     `· **웹에서 일정 확정 직후 알림:** 확정 후 **최대 약 ${pollSec}초 안**에 전송 시도, 확정 시각이 **${confirmMin}분보다 오래되면** 생략 (\`CONFIRM_NOTIFY_MAX_AGE_MS\`).`,
     `· **DB 확인(폴링):** **${pollSec}초**마다 (\`POLL_INTERVAL_MS\`=${POLL_MS}).`,
+    "· **슈상보:** 짝수 시 로컬 **xx:59 ~ 정각(00초) 직전** 사이에 1회 (06·07·08시 제외, 폴링 시점에 전송).",
     "",
     "_변경 후에는 봇 프로세스를 다시 켜야 반영돼요._",
   ].join("\n");
@@ -814,8 +815,26 @@ function buildRaidAllowed(raw) {
 const RAID_ALLOWED = buildRaidAllowed(process.env.REMINDER_RAID_TYPE);
 const warnedBadChannelIds = new Set();
 
-/** 슈상보: 짝수 시 **정각 1분 전** 알림(전송 시각 기준). 오전 6~8시(6·7·8시) 제외 → 0,2,4,10,…,22 */
+/** 슈상보: 짝수 시 **로컬 xx:59 ~ 정각(00:00) 직전** 구간에 1회 알림. 오전 6~8시(6·7·8시) 제외 → 0,2,4,10,…,22 */
 const SUGO_MERCHANT_HOURS = new Set([0, 2, 4, 10, 12, 14, 16, 18, 20, 22]);
+
+/** 짝수 시 정각 기준 전송 구간 [startMs, endMs): 23:59~24:00 또는 (h-1):59~h:00 */
+function sugoMerchantWindowBoundsLocal(eventH, d) {
+  const y = d.getFullYear();
+  const mo = d.getMonth();
+  const day = d.getDate();
+  if (eventH === 0) {
+    const startMs = new Date(y, mo, day, 23, 59, 0, 0).getTime();
+    const endMs = new Date(y, mo, day + 1, 0, 0, 0, 0).getTime();
+    const dayOfEvent = new Date(y, mo, day + 1);
+    const dk = dateKeyLocalFromDate(dayOfEvent);
+    return { startMs, endMs, dk };
+  }
+  const startMs = new Date(y, mo, day, eventH - 1, 59, 0, 0).getTime();
+  const endMs = new Date(y, mo, day, eventH, 0, 0, 0).getTime();
+  const dk = dateKeyLocalFromDate(d);
+  return { startMs, endMs, dk };
+}
 
 const PARTY_MAX_TOTAL = 8;
 const PARTY_UUID_RE =
@@ -1238,7 +1257,7 @@ function buildSlashCommands() {
     new SlashCommandBuilder().setName("dice").setDescription("1~100 랜덤 주사위 (이 채널에 멘션)").toJSON(),
     new SlashCommandBuilder()
       .setName("sugo_ping")
-      .setDescription("슈고 상인 보호(슈상보) 짝수 시 정각 1분 전 알림")
+      .setDescription("슈고 상인 보호(슈상보) 짝수 시 xx:59~정각 직전 알림")
       .addSubcommand((sc) =>
         sc.setName("register").setDescription("이 텍스트 채널에서 슈상보 알림 받기 (본인만)"),
       )
@@ -1418,7 +1437,7 @@ async function handleSugoPingInteraction(supabase, interaction) {
       content: [
         "🛡️ **슈상보** 알림을 등록했어요. (본인만 가능)",
         `· 알림 채널: <#${interaction.channelId}>`,
-        "· **짝수 시 정각 1분 전**에 멘션 (로컬 **06·07·08시**는 제외)",
+        "· **짝수 시 xx:59 ~ 정각 직전**에 멘션 (로컬 **06·07·08시**는 제외)",
         "· 같은 서버에서 다시 등록하면 **지금 채널**로 바뀌어요.",
       ].join("\n"),
       ephemeral: true,
@@ -2498,20 +2517,11 @@ async function runSugoMerchantTick(client, supabase, state) {
   const now = Date.now();
   const d = new Date();
 
-  /** 짝수 시 정각 기준 — 그 시각 **1분 전**(로컬 xx:59)에 전송. 0시는 전날 23:59 → 달력 키는 해당 0시가 속한 날 */
+  /** 짝수 시 정각 기준 — 로컬 **xx:59:00 이상 ~ 정각(00:00) 미만**에만 전송. 0시는 전날 23:59~24:00 → 달력 키는 해당 0시가 속한 날 */
   let resolved = null;
   for (const eventH of SUGO_MERCHANT_HOURS) {
-    let anchorMs;
-    let dk;
-    if (eventH === 0) {
-      anchorMs = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 0, 0).getTime();
-      const dayOfEvent = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
-      dk = dateKeyLocalFromDate(dayOfEvent);
-    } else {
-      anchorMs = new Date(d.getFullYear(), d.getMonth(), d.getDate(), eventH - 1, 59, 0, 0).getTime();
-      dk = dateKeyLocalFromDate(d);
-    }
-    if (Math.abs(now - anchorMs) <= 90_000) {
+    const { startMs, endMs, dk } = sugoMerchantWindowBoundsLocal(eventH, d);
+    if (now >= startMs && now < endMs) {
       resolved = { eventHour: eventH, dk };
       break;
     }
@@ -2553,8 +2563,8 @@ async function runSugoMerchantTick(client, supabase, state) {
 
     const mentionLine = unique.map((id) => `<@${id}>`).join(" ");
     const text = [
-      "🛡️ **슈고 상인 보호(슈상보)** 짝수 시 정각 **1분 전** 알림이야! (오전 6~8시 제외)",
-      `⏰ **${String(h).padStart(2, "0")}:00** 정각까지 약 1분 남음`,
+      "🛡️ **슈고 상인 보호(슈상보)** 짝수 시 **정각 직전** 알림이야! (오전 6~8시 제외)",
+      `⏰ **${String(h).padStart(2, "0")}:00** 정각이 곧이에요`,
       mentionLine,
       "_상인님 조심히 다녀오세요~ ✨_",
     ].join("\n");
@@ -2589,7 +2599,7 @@ async function main() {
     `[확정 직후 멘션] 최근 ${Math.round(CONFIRM_NOTIFY_MAX_AGE_MS / 60_000)}분 이내 확정만 전송 · CONFIRM_NOTIFY_MAX_AGE_MS 로 조정`,
   );
   console.log(
-    `[슈상보] 짝수 시 정각 1분 전(xx:59) 멘션(06·07·08시 제외) — 대상 시각: ${[...SUGO_MERCHANT_HOURS].sort((a, b) => a - b).join(", ")}`,
+    `[슈상보] 짝수 시 xx:59~정각 직전 멘션(06·07·08시 제외) — 대상 시각: ${[...SUGO_MERCHANT_HOURS].sort((a, b) => a - b).join(", ")}`,
   );
   if (MESSAGE_CONTENT_INTENTS_ENABLED) {
     console.log(
