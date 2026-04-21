@@ -8,7 +8,7 @@
  * 실행: npm install 후 .env 복사·채우고 → npm start
  * 한 번만 점검: npm run check
  * 채널에 테스트 글: `/raid_notify test`(실행자 멘션) 또는 npm run test-notify
- * 명령 안내: `/raid_notify help`
+ * 명령 안내: `/raid_notify help` · 관리자 알림 시각: `/raid_notify timings`
  * 내 가능 시간: `/raid_my_schedule` (금주·차주 14일만, 날짜별·연속 구간 묶음)
  * 겹침: `/raid_overlap` (레이드별 웹 전원, 멘션 없음) · 주사위: `/dice` (1~100, 채널에 멘션)
  * 슈상보: `/sugo_ping` — 짝수 시 정각(06~08시 제외) 등록 채널에서 멘션
@@ -490,7 +490,14 @@ function stripDiscordMentionsForAtCommands(messageContent) {
 
 /** 일반 사용자에게만 보이는 슬래시 안내(채팅 `@봇 명령어`·`/raid_notify help` 공통) */
 function buildUserSlashHelpText() {
-  return [
+  const atBotChatNote = MESSAGE_CONTENT_INTENTS_ENABLED
+    ? "봇이 **메시지 본문**을 읽을 수 있게 되어 있을 때만 동작해요."
+    : "지금은 봇이 채팅 본문을 읽지 않아요. `REMIND_CHAT_ENABLED=1` 또는 `BOT_AT_COMMANDS_ENABLED=1` 일 때 켜져요.";
+  const remindChatLine = REMIND_CHAT_ENABLED
+    ? "· `알람` 으로 시작하는 문장, 또는 **봇 멘션 뒤에** `10분 뒤`처럼 시간만 적기 — 이 채널에서 예약 알람(멘션)."
+    : null;
+
+  const lines = [
     "📌 **누구나 쓸 수 있는 슬래시 명령** (채널 입력창에 `/` 를 눌러 검색해요)",
     "",
     "**레이드 알림** `/raid_notify`",
@@ -515,10 +522,15 @@ function buildUserSlashHelpText() {
     "",
     "**알람** `/remind`",
     "· 숫자 + `초`/`분`/`시간` + `user`(선택) — 예약 시각에 이 채널에서 멘션. 비우면 본인에게만.",
-    "· 채팅으로 `알람 …` 또는 봇 멘션+시간 합산은 `REMIND_CHAT_ENABLED=1` 일 때만 동작해요.",
     "",
-    "채팅에서 **봇을 멘션**하고 `명령어` 또는 `도움말` 이라고 입력해도, 위와 같은 **일반 명령만** 다시 보여 드려요.",
-  ].join("\n");
+    "**채팅으로 봇 멘션 (`@` …)**",
+    "_같은 줄에서 **봇을 멘션한 뒤** 아래 단어를 **이어서** 쓰면 돼요._",
+    "· `구버지` — 구마유시·위닝 멘탈리티 한마디.",
+    "· `명령어` 또는 `도움말` — 위에 적은 **일반 슬래시 명령**만 다시 정리해서 보여줘요.",
+    remindChatLine,
+    `_${atBotChatNote}_`,
+  ].filter(Boolean);
+  return lines.join("\n");
 }
 
 const ADMIN_SLASH_HELP_APPEND = [
@@ -530,10 +542,33 @@ const ADMIN_SLASH_HELP_APPEND = [
   "· `set` — 레이드 종류별로 알림 채널을 DB에 저장해요.",
   "· `status` — DB에 저장된 채널 ID를 요약해 보여줘요.",
   "· `clear` — DB 값을 지우고 `.env` 기본값으로 되돌려요.",
+  "· `timings` — **지금 봇이 쓰는** 알림 시각·간격(당일 몇 시, 30분 전, 확정 직후, 폴링). 봇을 돌리는 PC의 `.env` 기준이에요.",
   "",
   "**슈상보** `/sugo_ping`",
   "· `list` — 이 서버에 슈상보를 등록한 사람 목록.",
 ].join("\n");
+
+/** 관리자 전용: 봇 프로세스의 .env 기준 알림 시각 안내 */
+function buildNotifyTimingsHelpText() {
+  const tz = process.env.TZ ?? "(기본 시스템)";
+  const rt = process.env.REMIND_TZ;
+  const tzLine = rt ? `· **타임존:** \`TZ\`=\`${tz}\` · \`REMIND_TZ\`=\`${rt}\` (시작 시 적용)` : `· **타임존:** \`TZ\`=\`${tz}\``;
+  const hh = String(REMIND_DAY_HOUR).padStart(2, "0");
+  const pollSec = Math.round(POLL_MS / 1000);
+  const confirmMin = Math.round(CONFIRM_NOTIFY_MAX_AGE_MS / 60_000);
+  return [
+    "🕐 **레이드 알림 · 지금 이 봇이 쓰는 시각**",
+    "_봇을 실행한 머신의 `.env` 기준이에요. 디스코드 서버마다 다르지 않아요._",
+    "",
+    tzLine,
+    `· **당일 알림:** 출발 **당일** 로컬 **${hh}:00** (\`REMIND_DAY_HOUR\`) — 출발 시각이 이 시각보다 **이르면** 당일 알림은 **보내지 않아요.**`,
+    "· **출발 30분 전 알림:** 출발 시각 **정확히 30분 전** (코드 고정).",
+    `· **웹에서 일정 확정 직후 알림:** 확정 후 **최대 약 ${pollSec}초 안**에 전송 시도, 확정 시각이 **${confirmMin}분보다 오래되면** 생략 (\`CONFIRM_NOTIFY_MAX_AGE_MS\`).`,
+    `· **DB 확인(폴링):** **${pollSec}초**마다 (\`POLL_INTERVAL_MS\`=${POLL_MS}).`,
+    "",
+    "_변경 후에는 봇 프로세스를 다시 켜야 반영돼요._",
+  ].join("\n");
+}
 
 function buildGubujiWinningMentalitySpeech() {
   return [
@@ -671,6 +706,14 @@ function slotKeyToLocalDate(slotKey) {
 
 function formatKo(dt) {
   return dt.toLocaleString("ko-KR", { dateStyle: "medium", timeStyle: "short" });
+}
+
+/** 로컬 자정 기준으로 출발일과 오늘의 일 차이 (0=오늘, 1=내일, 음수=과거) */
+function localCalendarDaysFromToday(date) {
+  const t = new Date();
+  const a = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  const b = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  return Math.round((b.getTime() - a.getTime()) / (24 * 60 * 60 * 1000));
 }
 
 const RAID_TYPE_LABEL_KO = {
@@ -982,6 +1025,11 @@ function buildSlashCommands() {
               .setRequired(true)
               .addChoices(...TARGET_CHOICES, { name: "전부", value: "all" }),
           ),
+      )
+      .addSubcommand((sc) =>
+        sc
+          .setName("timings")
+          .setDescription("알림 시각·간격 (서버 관리 전용 · 봇 실행 PC의 .env 기준)"),
       )
       .addSubcommand((sc) => sc.setName("help").setDescription("이 봇 슬래시 명령 안내 (누구나)"))
       .toJSON(),
@@ -1759,6 +1807,15 @@ async function handleRaidNotifyInteraction(supabase, interaction) {
     return;
   }
 
+  if (sub === "timings") {
+    const chunks = chunkLines(buildNotifyTimingsHelpText().split("\n"), 1900);
+    await interaction.reply({ content: chunks[0], ephemeral: true });
+    for (let i = 1; i < chunks.length; i++) {
+      await interaction.followUp({ content: chunks[i], ephemeral: true });
+    }
+    return;
+  }
+
   if (sub === "set") {
     const target = interaction.options.getString("target", true);
     const ch = interaction.options.getChannel("channel", true);
@@ -1979,22 +2036,39 @@ async function runScheduleConfirmNotifyTick(client, supabase, state) {
     const slotStart = slotKeyToLocalDate(conf.slot_key);
     const em = RAID_TYPE_EMOJI[conf.raid_type] ?? "📌";
     const raidLabel = RAID_TYPE_LABEL_KO[conf.raid_type] ?? conf.raid_type;
+
+    const dayOffset = slotStart ? localCalendarDaysFromToday(slotStart) : null;
+    let relativeTag = "";
+    if (slotStart && dayOffset != null) {
+      if (dayOffset < 0) relativeTag = " _(지난 일정이면 웹·캘린더만 확인해 주세요)_";
+      else if (dayOffset === 0) relativeTag = " **(오늘)**";
+      else if (dayOffset === 1) relativeTag = " **(내일)**";
+      else if (dayOffset === 2) relativeTag = " **(모레)**";
+      else relativeTag = ` **(${dayOffset}일 뒤)**`;
+    }
+
+    const isToday = dayOffset === 0;
     const mentionLine =
       participants.length > 0
-        ? `💌 오늘의 동료들 불러올게요~ ${participants.map((id) => `<@${id}>`).join(" ")}`
+        ? isToday
+          ? `💌 오늘 함께하는 분들 불러올게요~ ${participants.map((id) => `<@${id}>`).join(" ")}`
+          : `💌 이번에 확정된 시간 함께인 분들 멘션이에요~ ${participants.map((id) => `<@${id}>`).join(" ")}`
         : "🥺 _(아직 불러올 디스코드 친구가 없어요… 웹에서 「가능 시간 저장」 한 번만 더 해주면 다음엔 꼭 꼬옥 멘션해 드릴게요!)_";
 
+    const calendarHint = isToday
+      ? "캘린더에 하트 도장 쾅! 💕"
+      : "아직 멀었다면 일정표에만 넣어 두고, 당일·알림 때 다시 볼게요 📌";
+
     const timeLine = slotStart
-      ? `⏰ 약속 시간이에요: **${formatKo(slotStart)}** · 캘린더에 하트 도장 쾅! 💕`
+      ? `⏰ **출발 시각:** **${formatKo(slotStart)}**${relativeTag}\n_${calendarHint}_`
       : `⏰ 슬롯: **${conf.slot_key}** · 시간 깜빡하면 안 돼요~`;
 
-    const text = [
-      `🎀 딩동댕~ **${raidLabel}** 레이드 일정이 **확정**됐어요! 같이 달려요 ${em}`,
-      timeLine,
-      mentionLine,
-      "",
-      "_다들 늦지 말고 쪽~ 모여요. 파이팅이에요! (๑˃ᴗ˂)ﻭ✧_",
-    ].join("\n");
+    const headerLine = `🎀 **${raidLabel}** 레이드 시간이 웹에서 **확정**됐어요! ${em}`;
+    const closingLine = isToday
+      ? "_다들 늦지 말고 쪽~ 모여요. 파이팅이에요! (๑˃ᴗ˂)ﻭ✧_"
+      : "_오늘이 아니어도 괜찮아요. **그날** 시간 맞춰 모여요. 파이팅! ✨_";
+
+    const text = [headerLine, timeLine, mentionLine, "", closingLine].join("\n");
 
     try {
       await channel.send({
