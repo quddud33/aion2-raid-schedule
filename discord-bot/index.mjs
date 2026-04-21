@@ -13,7 +13,7 @@
  * 겹침: `/raid_overlap` (레이드별 웹 전원, 멘션 없음) · 주사위: `/dice` (1~100, 채널에 멘션)
  * 슈상보: `/sugo_ping` — 짝수 시 정각 **1분 전**(06~08시 제외) 등록 채널에서 멘션
  * 파티: `/party_recruit` — 최대 8인, 버튼으로 출발·해체·가입·탈퇴
- * 알람: `/remind` · 취소 `/remind_cancel` · 채팅은 `REMIND_CHAT_ENABLED=1`+Intent 시 `알람 …`/`알람 해제`/`@봇 …`
+ * 알람: `/remind`(`reason` 선택) · 취소 `/remind_cancel` · 채팅 `알람 …`/`사유:`/`(메모)`/`알람 해제`/`@봇 …`
  * `@봇 구버지` / `@봇 명령어`·`도움말`: `REMIND_CHAT_ENABLED=1` 이거나 `BOT_AT_COMMANDS_ENABLED=1` 일 때 (Message Content Intent 필요)
  *
  * 부하 완화: 미래 확정 일정 없으면 레이드 틱 조기 종료 / 가능시간 DB 1회만 조회 /
@@ -79,6 +79,8 @@ const REMIND_SEND_RETRY_MS = Math.max(5_000, Number(process.env.REMIND_SEND_RETR
 const REMIND_MSG_PREFIX = Object.prototype.hasOwnProperty.call(process.env, "REMIND_MSG_PREFIX")
   ? String(process.env.REMIND_MSG_PREFIX ?? "")
   : "알람";
+/** 알람 사유 미입력 시 전송 본문에 쓰는 기본값 */
+const DEFAULT_REMIND_REASON = "알람";
 
 function envFlagTruthy(name) {
   const v = String(process.env[name] ?? "")
@@ -181,6 +183,34 @@ function parseKoRemindContent(content) {
   return { delayMs, labelKo: buildKoCompoundRemindLabel(parts) };
 }
 
+/**
+ * `사유: …` / `사유 : …` / 줄 끝 `(메모)` 를 뽑아 내고, 남은 문자열만 시간 합산에 쓴다.
+ * @returns {{ textForDelay: string, reasonKo: string | null }}
+ */
+function extractRemindReasonAndBodyForDelay(content) {
+  let text = String(content ?? "")
+    .replace(/<@!?(\d+)>/g, " ")
+    .replace(/<@&(\d+)>/g, " ")
+    .replace(/<#(\d+)>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  let reason = null;
+  const colon = text.match(/사유\s*[:：]\s*(.+)$/i);
+  if (colon && colon[1].trim()) {
+    reason = colon[1].trim().slice(0, 500);
+    text = text.replace(/사유\s*[:：]\s*.+$/i, " ").replace(/\s+/g, " ").trim();
+  } else {
+    const lp = text.match(/\(([^)]{1,300})\)\s*$/);
+    if (lp && lp[1].trim()) {
+      reason = lp[1].trim().slice(0, 500);
+      text = text.replace(/\([^)]*\)\s*$/, "").replace(/\s+/g, " ").trim();
+    }
+  }
+
+  return { textForDelay: text, reasonKo: reason };
+}
+
 /** 본문에서 멘션·채널 태그 제거한 뒤 공백 정리 */
 function normalizeRemindChatBody(messageContent) {
   return String(messageContent ?? "")
@@ -236,6 +266,7 @@ function resolveRemindTargetUser(message, client) {
  * @param {string} [p.unit]
  * @param {number} [p.delayMs] 채팅 파싱 합산 시 `labelKo`와 함께 사용
  * @param {string} [p.labelKo]
+ * @param {string} [p.reasonKo] 알람 사유(미지정 시 전송 시 기본 문구)
  * @returns {Promise<{ ok: true, alarm: object, whenKo: string } | { ok: false, error: string }>}
  */
 async function tryScheduleRemind(p) {
@@ -274,6 +305,8 @@ async function tryScheduleRemind(p) {
     };
   }
   const dueAt = Date.now() + delayMs;
+  const reasonKo =
+    p.reasonKo != null && String(p.reasonKo).trim() ? String(p.reasonKo).trim().slice(0, 500) : undefined;
   const alarm = {
     id: randomUUID(),
     channelId: p.channelId,
@@ -282,6 +315,7 @@ async function tryScheduleRemind(p) {
     createdById: p.createdById,
     dueAt,
     labelKo,
+    ...(reasonKo ? { reasonKo } : {}),
   };
   gAlarmState.alarms.push(alarm);
   await persistAlarmState();
@@ -360,7 +394,13 @@ async function sendRemindAlarmMessage(alarm) {
       return false;
     }
     const label = typeof alarm.labelKo === "string" && alarm.labelKo ? alarm.labelKo : "알람";
-    const lines = ["⏰ **알람 시간이에요**", `<@${alarm.targetUserId}>`, `_(${label} · 등록: <@${alarm.createdById}>)_`];
+    const memo =
+      typeof alarm.reasonKo === "string" && alarm.reasonKo.trim() ? alarm.reasonKo.trim() : DEFAULT_REMIND_REASON;
+    const lines = [
+      "⏰ **알람 시간이에요**",
+      `<@${alarm.targetUserId}>`,
+      `_(${label} · 사유: ${memo} · 등록: <@${alarm.createdById}>)_`,
+    ];
     await ch.send({
       content: lines.join("\n"),
       allowedMentions: { users: uniqueMentionUserIds(alarm.targetUserId, alarm.createdById) },
@@ -472,6 +512,8 @@ async function handleRemindInteraction(interaction) {
   const amount = interaction.options.getInteger("amount", true);
   const unit = interaction.options.getString("unit", true);
   const target = interaction.options.getUser("user") ?? interaction.user;
+  const reasonOpt = interaction.options.getString("reason");
+  const reasonKo = reasonOpt?.trim() ? reasonOpt.trim().slice(0, 200) : undefined;
 
   const result = await tryScheduleRemind({
     channelId: interaction.channelId,
@@ -480,16 +522,22 @@ async function handleRemindInteraction(interaction) {
     targetUserId: target.id,
     amount,
     unit,
+    reasonKo,
   });
   if (!result.ok) {
     await interaction.reply({ content: `⏰ ${result.error}`, ephemeral: true });
     return;
   }
+  const memoLine =
+    result.alarm.reasonKo != null && String(result.alarm.reasonKo).trim()
+      ? `· 사유: **${String(result.alarm.reasonKo).trim()}**`
+      : `· 사유: **${DEFAULT_REMIND_REASON}** (기본)`;
   await interaction.reply({
     content: [
       `⏰ 알람을 등록했어요.`,
       `· 멘션: <@${target.id}>`,
       `· 시각: **${result.whenKo}** (${result.alarm.labelKo})`,
+      memoLine,
       `_이 채널(<#${interaction.channelId}>)에 올라가요._`,
     ].join("\n"),
     ephemeral: true,
@@ -548,13 +596,14 @@ async function handleRemindMessageCreate(message, client) {
     return;
   }
 
-  const parsed = parseKoRemindContent(message.content);
+  const { textForDelay, reasonKo: parsedReason } = extractRemindReasonAndBodyForDelay(message.content);
+  const parsed = parseKoRemindContent(textForDelay);
   if (!parsed) {
     if (REMIND_MSG_PREFIX.length > 0 && message.content.trimStart().startsWith(REMIND_MSG_PREFIX)) {
       await message
         .reply({
           content:
-            "⏰ 예: `알람 1시간 10분 10초 뒤`, `알람 30분 후`, `알람 10초` 또는 봇을 멘션하고 `10분 뒤에 알려줘` 처럼 적어 주세요.\n취소: `알람 해제`(이 채널), `알람 전부 해제`(이 서버), `@봇 해제`",
+            "⏰ 예: `알람 1시간 10분 10초 뒤`, `알람 30분 후`, `알람 10초` 또는 봇을 멘션하고 `10분 뒤에 알려줘` 처럼 적어 주세요.\n사유(선택): `사유: 길드`, `사유 : 보스`, 줄 끝 `(메모)`\n취소: `알람 해제`(이 채널), `알람 전부 해제`(이 서버), `@봇 해제`",
           allowedMentions: { repliedUser: false },
         })
         .catch(() => {});
@@ -569,6 +618,7 @@ async function handleRemindMessageCreate(message, client) {
     targetUserId: target.id,
     delayMs: parsed.delayMs,
     labelKo: parsed.labelKo,
+    reasonKo: parsedReason || undefined,
   });
   if (!result.ok) {
     await message
@@ -576,12 +626,17 @@ async function handleRemindMessageCreate(message, client) {
       .catch(() => {});
     return;
   }
+  const memoLine =
+    result.alarm.reasonKo != null && String(result.alarm.reasonKo).trim()
+      ? `· 사유: **${String(result.alarm.reasonKo).trim()}**`
+      : `· 사유: **${DEFAULT_REMIND_REASON}** (기본)`;
   await message
     .reply({
       content: [
         "⏰ 알람을 등록했어요.",
         `· 멘션: <@${target.id}>`,
         `· 시각: **${result.whenKo}** (${result.alarm.labelKo})`,
+        memoLine,
         "_이 채널에 올라가요._",
       ].join("\n"),
       allowedMentions: { users: [target.id], repliedUser: false },
@@ -606,6 +661,7 @@ function buildUserSlashHelpText() {
   const remindChatLine = REMIND_CHAT_ENABLED
     ? [
         "· `알람` 으로 시작하는 문장, 또는 **봇 멘션 뒤에** `10분 뒤`처럼 시간만 적기 — 이 채널에서 예약 알람(멘션).",
+        "· **사유(선택):** `사유: …` / `사유 : …` / 줄 끝 `(메모)` — 없으면 전송 시 **알람**.",
         "· **취소:** `알람 해제`·`알람 취소`(이 채널), `알람 전부 해제`·`알람 모두 해제`(이 서버), `@봇 해제`·`@봇 취소`(이 채널).",
       ].join("\n")
     : null;
@@ -634,7 +690,7 @@ function buildUserSlashHelpText() {
     "· `kick` — 파티장이 열린 파티에서 멤버를 추방해요.",
     "",
     "**알람** `/remind`",
-    "· 숫자 + `초`/`분`/`시간` + `user`(선택) — 예약 시각에 이 채널에서 멘션. 비우면 본인에게만.",
+    "· 숫자 + `초`/`분`/`시간` + `user`(선택) + `reason`(선택) — 예약 시각에 이 채널에서 멘션. 비우면 본인에게만. 사유 없으면 전송 시 **알람**.",
     "**알람 취소** `/remind_cancel`",
     "· `scope` — 이 채널만 / 이 서버 전체(본인이 건 예약만).",
     "",
@@ -1224,6 +1280,9 @@ function buildSlashCommands() {
           ),
       )
       .addUserOption((o) => o.setName("user").setDescription("멘션할 사람 (비우면 본인)").setRequired(false))
+      .addStringOption((o) =>
+        o.setName("reason").setDescription("사유 (선택 · 비우면 기본)").setRequired(false).setMaxLength(200),
+      )
       .toJSON(),
     new SlashCommandBuilder()
       .setName("remind_cancel")
