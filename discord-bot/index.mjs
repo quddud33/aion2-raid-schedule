@@ -1,6 +1,7 @@
 /**
  * 일정 확정(raid_schedule_confirmation) 기준으로
- * 출발 **당일 REMIND_DAY_HOUR 시(기본 06:00)** / **30분 전**에 디스코드 채널에 멘션 알림을 보냅니다.
+ * **확정 직후**(봇이 감지한 뒤 한 번) 해당 슬롯 참가자에게 멘션하고,
+ * 출발 **당일 REMIND_DAY_HOUR 시(기본 06:00)** / **30분 전**에도 디스코드 채널에 멘션 알림을 보냅니다.
  *
  * 채널: `.env` 또는 Supabase `discord_reminder_channel_config` (디스코드 `/raid_notify` 로 설정)
  *
@@ -13,6 +14,7 @@
  * 슈상보: `/sugo_ping` — 짝수 시 정각(06~08시 제외) 등록 채널에서 멘션
  * 파티: `/party_recruit` — 최대 8인, 버튼으로 출발·해체·가입·탈퇴
  * 알람: `/remind` · 채팅 파싱은 `REMIND_CHAT_ENABLED=1`+Bot 탭 Intent 시 `알람 …`/`@봇 …`
+ * `@봇 구버지` / `@봇 명령어`·`도움말`: `REMIND_CHAT_ENABLED=1` 이거나 `BOT_AT_COMMANDS_ENABLED=1` 일 때 (Message Content Intent 필요)
  *
  * 부하 완화: 미래 확정 일정 없으면 레이드 틱 조기 종료 / 가능시간 DB 1회만 조회 /
  * 전송 기록 파일 주기적 정리·실제 알림 보낼 때만 state 저장 (자세한 건 로그 `[최적화]`)
@@ -58,6 +60,8 @@ const ALARM_STATE_PATH = process.env.REMIND_ALARM_PATH
   : resolve(__botDir, "pending-alarms.json");
 /** 저사양 VM: 90~120초 권장(부하·OOM 완화). 기본 60초 유지 */
 const POLL_MS = Number(process.env.POLL_INTERVAL_MS ?? 60_000);
+/** 확정 직후 멘션: `updated_at` 이 이 시간(밀리초)보다 오래되면 전송 생략(봇 재시작 시 과거 확정 일괄 알림 방지). 기본 15분 */
+const CONFIRM_NOTIFY_MAX_AGE_MS = Math.max(60_000, Number(process.env.CONFIRM_NOTIFY_MAX_AGE_MS ?? 900_000) || 900_000);
 const REMIND_DAY_HOUR = Math.min(23, Math.max(0, Number(process.env.REMIND_DAY_HOUR ?? 6) || 6));
 /** sent-reminders.json 에서 오래된 키 제거(메모리·디스크·JSON 파싱 부담 완화) */
 const STATE_PRUNE_RAID_DAYS = Math.max(7, Number(process.env.STATE_PRUNE_RAID_DAYS ?? 14) || 14);
@@ -90,6 +94,8 @@ function envFlagTruthy(name) {
  * (초대 URL의 ‘봇 권한’ 체크박스와는 다른 곳입니다.)
  */
 const REMIND_CHAT_ENABLED = envFlagTruthy("REMIND_CHAT_ENABLED");
+/** GuildMessages + MessageContent — 알람 채팅(`REMIND_CHAT_ENABLED`) 또는 `@봇 구버지` / `@봇 명령어` 등(`BOT_AT_COMMANDS_ENABLED=1`) */
+const MESSAGE_CONTENT_INTENTS_ENABLED = REMIND_CHAT_ENABLED || envFlagTruthy("BOT_AT_COMMANDS_ENABLED");
 
 let gAlarmState = { alarms: [] };
 /** @type {Map<string, NodeJS.Timeout>} */
@@ -473,6 +479,111 @@ async function handleRemindMessageCreate(message, client) {
     .catch(() => {});
 }
 
+function stripDiscordMentionsForAtCommands(messageContent) {
+  return String(messageContent ?? "")
+    .replace(/<@!?(\d+)>/g, " ")
+    .replace(/<@&(\d+)>/g, " ")
+    .replace(/<#(\d+)>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** 일반 사용자에게만 보이는 슬래시 안내(채팅 `@봇 명령어`·`/raid_notify help` 공통) */
+function buildUserSlashHelpText() {
+  return [
+    "📌 **누구나 쓸 수 있는 슬래시 명령** (채널 입력창에 `/` 를 눌러 검색해요)",
+    "",
+    "**레이드 알림** `/raid_notify`",
+    "· `help` — 이 봇 안내(지금 보고 있는 목록과 비슷해요).",
+    "· `test` — 실제 알림이 올라갈 채널로 테스트 글을 보내고, 실행한 사람에게 멘션해요.",
+    "",
+    "**내 가능 시간** `/raid_my_schedule`",
+    "· 웹에 저장해 둔 슬롯을 금주·차주(레이드 주 14일)만 정리해서 보여줘요. 응답은 본인만 볼 수 있어요.",
+    "",
+    "**공대 겹침** `/raid_overlap`",
+    "· 레이드 종류를 고르면, 웹에 등록한 **전원**이 겹치는 시간만 닉네임으로 보여줘요. 멘션은 없어요.",
+    "",
+    "**주사위** `/dice`",
+    "· 1~100 무작위. 이 채널에 실행한 사람을 멘션해요.",
+    "",
+    "**슈상보** `/sugo_ping`",
+    "· `register` / `unregister` — 이 텍스트 채널에서 슈고 상인 보호 알림을 켜거나 끄기(본인만 가능).",
+    "",
+    "**파티 구인** `/party_recruit`",
+    "· `create` — 이 채널에 모집 글을 올려요(파티장=실행자, 최대 8인). 버튼으로 출발·해체·가입·탈퇴.",
+    "· `kick` — 파티장이 열린 파티에서 멤버를 추방해요.",
+    "",
+    "**알람** `/remind`",
+    "· 숫자 + `초`/`분`/`시간` + `user`(선택) — 예약 시각에 이 채널에서 멘션. 비우면 본인에게만.",
+    "· 채팅으로 `알람 …` 또는 봇 멘션+시간 합산은 `REMIND_CHAT_ENABLED=1` 일 때만 동작해요.",
+    "",
+    "채팅에서 **봇을 멘션**하고 `명령어` 또는 `도움말` 이라고 입력해도, 위와 같은 **일반 명령만** 다시 보여 드려요.",
+  ].join("\n");
+}
+
+const ADMIN_SLASH_HELP_APPEND = [
+  "",
+  "────────────",
+  "🔐 **서버 관리자 전용** (해당 슬래시를 실제로 입력했을 때만 이 블록이 함께 보여요)",
+  "",
+  "**알림 채널 DB** `/raid_notify`",
+  "· `set` — 레이드 종류별로 알림 채널을 DB에 저장해요.",
+  "· `status` — DB에 저장된 채널 ID를 요약해 보여줘요.",
+  "· `clear` — DB 값을 지우고 `.env` 기본값으로 되돌려요.",
+  "",
+  "**슈상보** `/sugo_ping`",
+  "· `list` — 이 서버에 슈상보를 등록한 사람 목록.",
+].join("\n");
+
+function buildGubujiWinningMentalitySpeech() {
+  return [
+    "📘 **구마유시 × 위닝 멘탈리티** — 구버지의 한마디",
+    "",
+    "_바깥 소음 대신, 안쪽 나침반을 돌려 보자._ **위닝 멘탈리티**는 이기는 것만이 아니라 **다시 설 수 있는 태도**야.",
+    "",
+    "**다섯 가지 주제, 전부 읊어 줄게요.**",
+    "",
+    "**1.** 자기 객관화의 기술: 중심을 내면에 두는 법 — 거울을 바깥이 아니라 마음 안쪽에 두고, 나를 한 발 떨어져 바라보기.",
+    "",
+    "**2.** 실패를 성장의 발판으로 만드는 법 — 넘어진 자리에서만 보이는 디테일을 주워 담고, 다음 스텝의 발판으로 쓰기.",
+    "",
+    "**3.** 슬럼프 관리와 극복 전략 — 숨 고르기, 루틴, 작은 승리로 호흡을 되찾고 슬럼프를 지나가기.",
+    "",
+    "**4.** 목표 달성을 넘어선 삶의 가치 발견하기 — 트로피 뒤에 숨은 **왜 이 길을 걷는지**를 한 번 더 묻기.",
+    "",
+    "**5.** 지속 가능한 성장을 위한 루틴 만들기 — 불꽃만 쫓지 말고, 매일 돌아올 수 있는 리듬을 짜기.",
+    "",
+    "_구버지는 여기까지. 다음 라인에서 만나요! ✨_",
+  ].join("\n");
+}
+
+/**
+ * 봇 멘션 + `구버지` / `명령어` / `도움말`
+ * @returns {Promise<boolean>} 처리했으면 true (알람 채팅과 중복 방지)
+ */
+async function handleBotAtCommands(message, client) {
+  if (!message.guild || message.author.bot) return false;
+  if (!message.channel?.isTextBased?.()) return false;
+  if (!message.mentions.users.has(client.user.id)) return false;
+
+  const body = stripDiscordMentionsForAtCommands(message.content);
+  if (!body) return false;
+
+  if (body.includes("구버지")) {
+    await message
+      .reply({ content: buildGubujiWinningMentalitySpeech(), allowedMentions: { parse: [] } })
+      .catch(() => {});
+    return true;
+  }
+  if (body.includes("명령어") || body.includes("도움말")) {
+    await message
+      .reply({ content: buildUserSlashHelpText(), allowedMentions: { parse: [] } })
+      .catch(() => {});
+    return true;
+  }
+  return false;
+}
+
 const RAID_TYPES = ["rudra", "bagot", "lostark"];
 
 /** null 이면 rudra·bagot·lostark 전부. 아니면 Set 에 포함된 타입만 */
@@ -768,6 +879,18 @@ function pruneReminderState(state) {
       }
       continue;
     }
+    if (key.startsWith("confirmSent|")) {
+      const parts = key.split("|");
+      if (parts.length >= 4) {
+        const slotKey = parts[3];
+        const dt = slotKeyToLocalDate(slotKey);
+        if (dt && dt.getTime() < raidCut) {
+          delete out[key];
+          removed++;
+        }
+      }
+      continue;
+    }
     const lastColon = key.lastIndexOf(":");
     if (lastColon <= 0) continue;
     const kind = key.slice(lastColon + 1);
@@ -794,27 +917,6 @@ const TARGET_CHOICES = [
   { name: "바고트", value: "bagot" },
   { name: "로스트아크", value: "lostark" },
 ];
-
-const SLASH_HELP_KO = [
-  "**출발 알림 봇 — `/raid_notify` 명령**",
-  "",
-  "• `help` — 이 안내 (누구나)",
-  "• `test` — 알림으로 쓰는 **채널에 테스트 글** + **명령 실행자 멘션** (누구나). 옵션 `raid_route`: 기본 / 루드라 / 바고트 / 로아 라우팅",
-  "• `set` — **서버 관리** 권한 필요. DB에 채널 저장 (`target` + `channel`)",
-  "• `status` — **서버 관리** 권한. DB에 저장된 채널 요약",
-  "• `clear` — **서버 관리** 권한. DB 값 삭제 → 다시 `.env` 의 `DISCORD_CHANNEL_ID*` 기준",
-  "",
-  "**채널이 정해지는 순서** (앞이 우선): DB 타입별 → `.env` 의 `DISCORD_CHANNEL_ID_RUDRA` 등 → DB 기본 → `.env` 의 `DISCORD_CHANNEL_ID`",
-  "",
-  "**자동 알림:** 웹에서 확정된 일정 기준, 당일 지정 시각·출발 30분 전에 위 채널로 전송 (봇 프로세스가 켜져 있을 때).",
-  "",
-  "**내 가능 시간:** `/raid_my_schedule` — 금주·차주(레이드 주 14일)만, 날짜별·연속 구간 묶어 표시 (본인만 보임).",
-  "**공대 겹침:** `/raid_overlap` — 해당 레이드 **웹 등록 전원** 기준, 금주·차주에서 **전원 겹치는** 슬롯 (닉네임만, 멘션 없음).",
-  "**주사위:** `/dice` — 1~100 무작위, 이 채널에 실행자 멘션.",
-  "**슈상보:** `/sugo_ping` — `register`/`unregister` 본인만, `list`는 서버 관리. 짝수 시 정각(06~08시 제외) 등록 채널에서 한 번에 멘션.",
-  "**파티 구인:** `/party_recruit` — `create`로 모집 글(파티장=실행자, 최대 8인), `kick`으로 추방. 버튼: 출발·해체(빨강), 가입·탈퇴(파랑).",
-  "**알람:** `/remind` 또는 채팅 `알람 1시간 10분 10초 뒤`처럼 **여러 단위 합산**(접두 `알람`) / `@봇`+시간 — **이 채널** 멘션. 다른 사람 멘션 시 그 대상.",
-].join("\n");
 
 function buildSlashCommands() {
   return [
@@ -1579,7 +1681,20 @@ async function handleRaidNotifyInteraction(supabase, interaction) {
   const sub = interaction.options.getSubcommand();
 
   if (sub === "help") {
-    await interaction.reply({ content: SLASH_HELP_KO, ephemeral: true });
+    const isAdmin = interaction.member?.permissions?.has?.(PermissionFlagsBits.ManageGuild);
+    let content = buildUserSlashHelpText();
+    content += [
+      "",
+      "",
+      "**채널이 정해지는 순서** (앞이 우선): DB 타입별 → `.env` 의 `DISCORD_CHANNEL_ID_RUDRA` 등 → DB 기본 → `.env` 의 `DISCORD_CHANNEL_ID`",
+      "**자동 알림:** 웹에서 확정된 일정 기준, 당일·출발 30분 전 등(봇이 켜져 있을 때).",
+    ].join("\n");
+    if (isAdmin) content += ADMIN_SLASH_HELP_APPEND;
+    const chunks = chunkLines(content.split("\n"), 1900);
+    await interaction.reply({ content: chunks[0], ephemeral: true });
+    for (let i = 1; i < chunks.length; i++) {
+      await interaction.followUp({ content: chunks[i], ephemeral: true });
+    }
     return;
   }
 
@@ -1784,6 +1899,118 @@ async function runTestSend(client, supabase) {
     await ch.send({ content: lines.join("\n") });
   }
   console.log(`[테스트] 전송 완료 → 채널 ${targetCid}`);
+}
+
+/**
+ * 웹에서 일정 확정(upsert) 직후, 해당 슬롯에 가능 시간을 넣은 사람들에게 디스코드 멘션을 한 번 보냅니다.
+ * `sent-reminders.json` 에 `confirmSent|…` 키로 중복 전송을 막고, `updated_at` 이 너무 오래된 건 무시합니다.
+ */
+async function runScheduleConfirmNotifyTick(client, supabase, state) {
+  const { data: confs, error } = await supabase.from("raid_schedule_confirmation").select("*");
+  if (error) throw error;
+  if (!confs?.length) return state;
+
+  const { data: avRows, error: avErr } = await supabase
+    .from("raid_availability")
+    .select("raid_type, discord_id, slots");
+  if (avErr) throw avErr;
+  const partIndex = buildRaidParticipantIndex(avRows);
+
+  let cfg = null;
+  try {
+    cfg = await fetchReminderChannelConfig(supabase);
+  } catch (e) {
+    console.error("[경고] discord_reminder_channel_config 읽기 실패 — .env 채널만 사용:", e?.message ?? e);
+  }
+
+  const effectiveDefaultId = effectiveDefaultChannelId(cfg);
+  const channelCache = new Map();
+  async function textChannelById(id) {
+    if (channelCache.has(id)) return channelCache.get(id);
+    try {
+      const ch = await client.channels.fetch(id);
+      const ok = ch?.isTextBased() ? ch : null;
+      channelCache.set(id, ok);
+      return ok;
+    } catch {
+      channelCache.set(id, null);
+      return null;
+    }
+  }
+
+  const defaultCh = await textChannelById(effectiveDefaultId);
+  if (!defaultCh) {
+    console.error(
+      "[오류] 기본 알림 채널을 열 수 없습니다. `/raid_notify set` 또는 `DISCORD_CHANNEL_ID` 확인. (확정 직후 멘션 생략)",
+    );
+    return state;
+  }
+
+  const now = Date.now();
+  let nextState = { ...state };
+  let mutated = false;
+
+  for (const conf of confs) {
+    if (RAID_ALLOWED && !RAID_ALLOWED.has(conf.raid_type)) continue;
+    const weekKey = String(conf.raid_week_start ?? "").slice(0, 10);
+    const updatedAtMs = conf.updated_at ? new Date(conf.updated_at).getTime() : NaN;
+    if (!Number.isFinite(updatedAtMs)) continue;
+
+    const age = now - updatedAtMs;
+    if (age < 0) continue;
+    if (age > CONFIRM_NOTIFY_MAX_AGE_MS) continue;
+
+    const stateKey = `confirmSent|${conf.raid_type}|${weekKey}|${conf.slot_key}|${conf.updated_at}`;
+    if (nextState[stateKey]) continue;
+
+    const rawParticipants = participantsFromIndex(partIndex, conf.raid_type, conf.slot_key);
+    const participants = [...new Set(rawParticipants)];
+
+    const targetCid = channelIdForRaidType(conf.raid_type, cfg);
+    const resolvedCh = await textChannelById(targetCid);
+    if (!resolvedCh && targetCid !== effectiveDefaultId && !warnedBadChannelIds.has(targetCid)) {
+      warnedBadChannelIds.add(targetCid);
+      console.error(
+        `[오류] raid_type=${conf.raid_type} 채널 ${targetCid} 를 열 수 없어 기본 채널로 보냅니다. (이 메시지는 채널당 1회)`,
+      );
+    }
+    const channel = resolvedCh ?? defaultCh;
+
+    const slotStart = slotKeyToLocalDate(conf.slot_key);
+    const em = RAID_TYPE_EMOJI[conf.raid_type] ?? "📌";
+    const raidLabel = RAID_TYPE_LABEL_KO[conf.raid_type] ?? conf.raid_type;
+    const mentionLine =
+      participants.length > 0
+        ? `💌 오늘의 동료들 불러올게요~ ${participants.map((id) => `<@${id}>`).join(" ")}`
+        : "🥺 _(아직 불러올 디스코드 친구가 없어요… 웹에서 「가능 시간 저장」 한 번만 더 해주면 다음엔 꼭 꼬옥 멘션해 드릴게요!)_";
+
+    const timeLine = slotStart
+      ? `⏰ 약속 시간이에요: **${formatKo(slotStart)}** · 캘린더에 하트 도장 쾅! 💕`
+      : `⏰ 슬롯: **${conf.slot_key}** · 시간 깜빡하면 안 돼요~`;
+
+    const text = [
+      `🎀 딩동댕~ **${raidLabel}** 레이드 일정이 **확정**됐어요! 같이 달려요 ${em}`,
+      timeLine,
+      mentionLine,
+      "",
+      "_다들 늦지 말고 쪽~ 모여요. 파이팅이에요! (๑˃ᴗ˂)ﻭ✧_",
+    ].join("\n");
+
+    try {
+      await channel.send({
+        content: text,
+        allowedMentions: participants.length > 0 ? { users: participants.slice(0, 100) } : undefined,
+      });
+      nextState[stateKey] = new Date().toISOString();
+      mutated = true;
+      console.log(`[확정 알림] ${conf.raid_type} ${weekKey} ${conf.slot_key}`);
+    } catch (e) {
+      console.error(`[확정 알림 실패] ${conf.raid_type} ${weekKey}`, e?.message ?? e);
+    }
+  }
+
+  if (mutated) await saveState(nextState);
+  return mutated ? nextState : state;
 }
 
 async function runTick(client, supabase, state) {
@@ -1997,15 +2224,18 @@ async function main() {
     `[최적화] 레이드 알림=가능시간 1회 조회·인덱스 / 상태정리 raid≥${STATE_PRUNE_RAID_DAYS}일 sugo≥${STATE_PRUNE_SUGO_DAYS}일 / 전송 시에만 state 저장`,
   );
   console.log(
+    `[확정 직후 멘션] 최근 ${Math.round(CONFIRM_NOTIFY_MAX_AGE_MS / 60_000)}분 이내 확정만 전송 · CONFIRM_NOTIFY_MAX_AGE_MS 로 조정`,
+  );
+  console.log(
     `[슈상보] 짝수 시 정각 멘션(06·07·08시 제외) — 시각: ${[...SUGO_MERCHANT_HOURS].sort((a, b) => a - b).join(", ")}`,
   );
-  if (REMIND_CHAT_ENABLED) {
+  if (MESSAGE_CONTENT_INTENTS_ENABLED) {
     console.log(
-      `[알람 채팅] 켜짐 · 접두 "${REMIND_MSG_PREFIX || "(없음·봇멘션만)"}" · Portal 앱→Bot→Privileged Gateway Intents→MESSAGE CONTENT(메시지 본문) ON 필수`,
+      `[메시지 본문] 켜짐 — 알람 채팅${REMIND_CHAT_ENABLED ? ` · 접두 "${REMIND_MSG_PREFIX || "(없음·봇멘션만)"}"` : ""}${envFlagTruthy("BOT_AT_COMMANDS_ENABLED") && !REMIND_CHAT_ENABLED ? " · @봇 구버지/명령어" : ""} · Portal→Bot→Privileged Gateway Intents→MESSAGE CONTENT ON 필수`,
     );
   } else {
     console.log(
-      `[알람 채팅] 끔 — 채팅 파싱 안 함(Bot 탭 Intent 불필요). 슬래시 /remind·레이드 알림은 동일`,
+      `[메시지 본문] 끔 — 채팅 알람·@봇 명령 비활성. 슬래시 /remind·레이드 알림은 동일. 켜려면 REMIND_CHAT_ENABLED=1 또는 BOT_AT_COMMANDS_ENABLED=1`,
     );
   }
 
@@ -2014,7 +2244,7 @@ async function main() {
   });
 
   const gatewayIntents = [GatewayIntentBits.Guilds];
-  if (REMIND_CHAT_ENABLED) {
+  if (MESSAGE_CONTENT_INTENTS_ENABLED) {
     gatewayIntents.push(GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent);
   }
   const client = new Client({ intents: gatewayIntents });
@@ -2040,12 +2270,13 @@ async function main() {
         console.error("[Discord] GuildCreate 슬래시 등록 실패:", e?.message ?? e);
       }
     });
-    if (REMIND_CHAT_ENABLED) {
+    if (MESSAGE_CONTENT_INTENTS_ENABLED) {
       client.on(Events.MessageCreate, async (message) => {
         try {
-          await handleRemindMessageCreate(message, client);
+          if (await handleBotAtCommands(message, client)) return;
+          if (REMIND_CHAT_ENABLED) await handleRemindMessageCreate(message, client);
         } catch (e) {
-          console.error("[message remind]", e?.message ?? e);
+          console.error("[message]", e?.message ?? e);
         }
       });
     }
@@ -2108,6 +2339,7 @@ async function main() {
       if (Object.keys(state).length !== nBefore) {
         await saveState(state);
       }
+      state = await runScheduleConfirmNotifyTick(client, supabase, state);
       state = await runTick(client, supabase, state);
       state = await runSugoMerchantTick(client, supabase, state);
       await runRemindOverdueSweep().catch((e) => console.error("[알람 스윕]", e?.message ?? e));
