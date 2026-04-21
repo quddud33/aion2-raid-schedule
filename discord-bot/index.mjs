@@ -2179,9 +2179,57 @@ function clearConfirmNotifyStateVariantsForRow(state, conf) {
   }
 }
 
+/** `discord_raid_confirm_notify_state` 한 번에 읽어 (raid_type|weekKey) → last_notified_updated_at_ms */
+async function fetchConfirmNotifyDbMap(supabase) {
+  try {
+    const { data: notifyRows, error: nErr } = await supabase
+      .from("discord_raid_confirm_notify_state")
+      .select("raid_type, raid_week_start, last_notified_updated_at_ms");
+    if (nErr) throw nErr;
+    const m = new Map();
+    for (const r of notifyRows ?? []) {
+      const wk =
+        typeof r.raid_week_start === "string"
+          ? r.raid_week_start.slice(0, 10)
+          : String(r.raid_week_start).slice(0, 10);
+      m.set(`${r.raid_type}|${wk}`, Number(r.last_notified_updated_at_ms));
+    }
+    return m;
+  } catch (e) {
+    console.warn("[확정 알림] DB 중복 방지 테이블 읽기 실패 — 파일 상태만 사용:", e?.message ?? e);
+    return null;
+  }
+}
+
+function isConfirmNotifyRecordedInDbMap(dbMap, conf, updatedAtMs) {
+  if (!dbMap) return false;
+  const weekKey = weekKeyFromConfirmation(conf);
+  const k = `${conf.raid_type}|${weekKey}`;
+  const stored = dbMap.get(k);
+  if (stored === undefined) return false;
+  return Number(stored) === updatedAtMs;
+}
+
+async function recordConfirmNotifyInDb(supabase, conf, updatedAtMs) {
+  const weekKey = weekKeyFromConfirmation(conf);
+  try {
+    const { error } = await supabase.from("discord_raid_confirm_notify_state").upsert(
+      {
+        raid_type: conf.raid_type,
+        raid_week_start: weekKey,
+        last_notified_updated_at_ms: updatedAtMs,
+      },
+      { onConflict: "raid_type,raid_week_start" },
+    );
+    if (error) throw error;
+  } catch (e) {
+    console.warn("[확정 알림] DB 기록 실패:", e?.message ?? e);
+  }
+}
+
 /**
  * 웹에서 일정 확정(upsert) 직후, 해당 슬롯에 가능 시간을 넣은 사람들에게 디스코드 멘션을 한 번 보냅니다.
- * `sent-reminders.json` 에 `confirmSent|…|updatedAtMs` 키로 중복 전송을 막고, `updated_at` 이 너무 오래된 건 무시합니다.
+ * `sent-reminders.json` 과 DB `discord_raid_confirm_notify_state` 로 중복 전송을 막고, `updated_at` 이 너무 오래된 건 무시합니다.
  */
 async function runScheduleConfirmNotifyTick(client, supabase, state) {
   const { data: confs, error } = await supabase.from("raid_schedule_confirmation").select("*");
@@ -2225,6 +2273,7 @@ async function runScheduleConfirmNotifyTick(client, supabase, state) {
   }
 
   const now = Date.now();
+  const dbNotifyMap = await fetchConfirmNotifyDbMap(supabase);
   let nextState = { ...state };
   let mutated = false;
 
@@ -2238,6 +2287,7 @@ async function runScheduleConfirmNotifyTick(client, supabase, state) {
     if (age < 0) continue;
     if (age > CONFIRM_NOTIFY_MAX_AGE_MS) continue;
 
+    if (isConfirmNotifyRecordedInDbMap(dbNotifyMap, conf, updatedAtMs)) continue;
     if (isConfirmNotifyAlreadySent(nextState, conf, updatedAtMs)) continue;
 
     const rawParticipants = participantsFromIndex(partIndex, conf.raid_type, conf.slot_key);
@@ -2297,6 +2347,7 @@ async function runScheduleConfirmNotifyTick(client, supabase, state) {
       });
       clearConfirmNotifyStateVariantsForRow(nextState, conf);
       nextState[confirmNotifyStateKeyCanonical(conf, updatedAtMs)] = new Date().toISOString();
+      await recordConfirmNotifyInDb(supabase, conf, updatedAtMs);
       mutated = true;
       console.log(`[확정 알림] ${conf.raid_type} ${weekKey} ${conf.slot_key}`);
     } catch (e) {
