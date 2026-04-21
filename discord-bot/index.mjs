@@ -2146,9 +2146,42 @@ async function runTestSend(client, supabase) {
   console.log(`[테스트] 전송 완료 → 채널 ${targetCid}`);
 }
 
+function weekKeyFromConfirmation(conf) {
+  return String(conf.raid_week_start ?? "").slice(0, 10);
+}
+
+/** DB `updated_at` 문자열 표기(Z/+00:00 등)와 무관하게 동일 여부를 맞추기 위해 ms 로 키를 씀 */
+function confirmNotifyStateKeyCanonical(conf, updatedAtMs) {
+  return `confirmSent|${conf.raid_type}|${weekKeyFromConfirmation(conf)}|${conf.slot_key}|${updatedAtMs}`;
+}
+
+/** 재시작 후에도 동일 확정이면 스킵 — 구버전 키(접미 ISO 문자열)와 호환 */
+function isConfirmNotifyAlreadySent(state, conf, updatedAtMs) {
+  const canonical = confirmNotifyStateKeyCanonical(conf, updatedAtMs);
+  if (state[canonical]) return true;
+  const weekKey = weekKeyFromConfirmation(conf);
+  const prefix = `confirmSent|${conf.raid_type}|${weekKey}|${conf.slot_key}|`;
+  for (const k of Object.keys(state)) {
+    if (!k.startsWith(prefix)) continue;
+    const suffix = k.slice(prefix.length);
+    if (suffix === String(updatedAtMs)) return true;
+    const legacyMs = new Date(suffix).getTime();
+    if (Number.isFinite(legacyMs) && legacyMs === updatedAtMs) return true;
+  }
+  return false;
+}
+
+function clearConfirmNotifyStateVariantsForRow(state, conf) {
+  const weekKey = weekKeyFromConfirmation(conf);
+  const prefix = `confirmSent|${conf.raid_type}|${weekKey}|${conf.slot_key}|`;
+  for (const k of Object.keys(state)) {
+    if (k.startsWith(prefix)) delete state[k];
+  }
+}
+
 /**
  * 웹에서 일정 확정(upsert) 직후, 해당 슬롯에 가능 시간을 넣은 사람들에게 디스코드 멘션을 한 번 보냅니다.
- * `sent-reminders.json` 에 `confirmSent|…` 키로 중복 전송을 막고, `updated_at` 이 너무 오래된 건 무시합니다.
+ * `sent-reminders.json` 에 `confirmSent|…|updatedAtMs` 키로 중복 전송을 막고, `updated_at` 이 너무 오래된 건 무시합니다.
  */
 async function runScheduleConfirmNotifyTick(client, supabase, state) {
   const { data: confs, error } = await supabase.from("raid_schedule_confirmation").select("*");
@@ -2197,7 +2230,7 @@ async function runScheduleConfirmNotifyTick(client, supabase, state) {
 
   for (const conf of confs) {
     if (RAID_ALLOWED && !RAID_ALLOWED.has(conf.raid_type)) continue;
-    const weekKey = String(conf.raid_week_start ?? "").slice(0, 10);
+    const weekKey = weekKeyFromConfirmation(conf);
     const updatedAtMs = conf.updated_at ? new Date(conf.updated_at).getTime() : NaN;
     if (!Number.isFinite(updatedAtMs)) continue;
 
@@ -2205,8 +2238,7 @@ async function runScheduleConfirmNotifyTick(client, supabase, state) {
     if (age < 0) continue;
     if (age > CONFIRM_NOTIFY_MAX_AGE_MS) continue;
 
-    const stateKey = `confirmSent|${conf.raid_type}|${weekKey}|${conf.slot_key}|${conf.updated_at}`;
-    if (nextState[stateKey]) continue;
+    if (isConfirmNotifyAlreadySent(nextState, conf, updatedAtMs)) continue;
 
     const rawParticipants = participantsFromIndex(partIndex, conf.raid_type, conf.slot_key);
     const participants = [...new Set(rawParticipants)];
@@ -2263,7 +2295,8 @@ async function runScheduleConfirmNotifyTick(client, supabase, state) {
         content: text,
         allowedMentions: participants.length > 0 ? { users: participants.slice(0, 100) } : undefined,
       });
-      nextState[stateKey] = new Date().toISOString();
+      clearConfirmNotifyStateVariantsForRow(nextState, conf);
+      nextState[confirmNotifyStateKeyCanonical(conf, updatedAtMs)] = new Date().toISOString();
       mutated = true;
       console.log(`[확정 알림] ${conf.raid_type} ${weekKey} ${conf.slot_key}`);
     } catch (e) {
