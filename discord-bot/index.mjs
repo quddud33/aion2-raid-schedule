@@ -11,7 +11,6 @@
  * 명령 안내: `/raid_notify help` · 관리자 알림 시각: `/raid_notify timings`
  * 내 가능 시간: `/raid_my_schedule` (금주·차주 14일만, 날짜별·연속 구간 묶음)
  * 겹침: `/raid_overlap` (레이드별 웹 전원, 멘션 없음) · 주사위: `/dice` (1~100, 채널에 멘션)
- * 슈상보: `/sugo_ping` — 짝수 시 **xx:59~정각**(06~08시 제외) 등록 채널에서 멘션
  * 파티: `/party_recruit` — 최대 8인, 버튼으로 출발·해체·가입·탈퇴
  * 알람: `/remind`(`reason` 선택) · 취소 `/remind_cancel` · 채팅 `알람 …`/`사유:`/`(메모)`/`알람 해제`/`@봇 …`
  * `@봇 구버지` / `@봇 명령어`·`도움말`: `REMIND_CHAT_ENABLED=1` 이거나 `BOT_AT_COMMANDS_ENABLED=1` 일 때 (Message Content Intent 필요)
@@ -65,7 +64,6 @@ const CONFIRM_NOTIFY_MAX_AGE_MS = Math.max(60_000, Number(process.env.CONFIRM_NO
 const REMIND_DAY_HOUR = Math.min(23, Math.max(0, Number(process.env.REMIND_DAY_HOUR ?? 6) || 6));
 /** sent-reminders.json 에서 오래된 키 제거(메모리·디스크·JSON 파싱 부담 완화) */
 const STATE_PRUNE_RAID_DAYS = Math.max(7, Number(process.env.STATE_PRUNE_RAID_DAYS ?? 14) || 14);
-const STATE_PRUNE_SUGO_DAYS = Math.max(3, Number(process.env.STATE_PRUNE_SUGO_DAYS ?? 10) || 10);
 
 /** `/remind` 최소·최대 지연 (남용 방지). 기본 최대 7일 */
 const REMIND_MIN_MS = Math.max(1_000, Number(process.env.REMIND_MIN_MS ?? 5_000) || 5_000);
@@ -682,9 +680,6 @@ function buildUserSlashHelpText() {
     "**주사위** `/dice`",
     "· 1~100 무작위. 이 채널에 실행한 사람을 멘션해요.",
     "",
-    "**슈상보** `/sugo_ping`",
-    "· `register` / `unregister` — 이 텍스트 채널에서 슈고 상인 보호 알림(짝수 시 정각 **1분 전**)을 켜거나 끄기(본인만 가능).",
-    "",
     "**파티 구인** `/party_recruit`",
     "· `create` — 이 채널에 모집 글을 올려요(파티장=실행자, 최대 8인). 버튼으로 출발·해체·가입·탈퇴.",
     "· `kick` — 파티장이 열린 파티에서 멤버를 추방해요.",
@@ -714,9 +709,6 @@ const ADMIN_SLASH_HELP_APPEND = [
   "· `status` — DB에 저장된 채널 ID를 요약해 보여줘요.",
   "· `clear` — DB 값을 지우고 `.env` 기본값으로 되돌려요.",
   "· `timings` — **지금 봇이 쓰는** 알림 시각·간격(당일 몇 시, 30분 전, 확정 직후, 폴링). 봇을 돌리는 PC의 `.env` 기준이에요.",
-  "",
-  "**슈상보** `/sugo_ping`",
-  "· `list` — 이 서버에 슈상보를 등록한 사람 목록.",
 ].join("\n");
 
 /** 관리자 전용: 봇 프로세스의 .env 기준 알림 시각 안내 */
@@ -736,7 +728,6 @@ function buildNotifyTimingsHelpText() {
     "· **출발 30분 전 알림:** 출발 시각 **정확히 30분 전** (코드 고정).",
     `· **웹에서 일정 확정 직후 알림:** 확정 후 **최대 약 ${pollSec}초 안**에 전송 시도, 확정 시각이 **${confirmMin}분보다 오래되면** 생략 (\`CONFIRM_NOTIFY_MAX_AGE_MS\`).`,
     `· **DB 확인(폴링):** **${pollSec}초**마다 (\`POLL_INTERVAL_MS\`=${POLL_MS}).`,
-    "· **슈상보:** 짝수 시 로컬 **xx:59 ~ 정각(00초) 직전** 사이에 1회 (06·07·08시 제외, 폴링 시점에 전송).",
     "",
     "_변경 후에는 봇 프로세스를 다시 켜야 반영돼요._",
   ].join("\n");
@@ -814,27 +805,6 @@ function buildRaidAllowed(raw) {
 
 const RAID_ALLOWED = buildRaidAllowed(process.env.REMINDER_RAID_TYPE);
 const warnedBadChannelIds = new Set();
-
-/** 슈상보: 짝수 시 **로컬 xx:59 ~ 정각(00:00) 직전** 구간에 1회 알림. 오전 6~8시(6·7·8시) 제외 → 0,2,4,10,…,22 */
-const SUGO_MERCHANT_HOURS = new Set([0, 2, 4, 10, 12, 14, 16, 18, 20, 22]);
-
-/** 짝수 시 정각 기준 전송 구간 [startMs, endMs): 23:59~24:00 또는 (h-1):59~h:00 */
-function sugoMerchantWindowBoundsLocal(eventH, d) {
-  const y = d.getFullYear();
-  const mo = d.getMonth();
-  const day = d.getDate();
-  if (eventH === 0) {
-    const startMs = new Date(y, mo, day, 23, 59, 0, 0).getTime();
-    const endMs = new Date(y, mo, day + 1, 0, 0, 0, 0).getTime();
-    const dayOfEvent = new Date(y, mo, day + 1);
-    const dk = dateKeyLocalFromDate(dayOfEvent);
-    return { startMs, endMs, dk };
-  }
-  const startMs = new Date(y, mo, day, eventH - 1, 59, 0, 0).getTime();
-  const endMs = new Date(y, mo, day, eventH, 0, 0, 0).getTime();
-  const dk = dateKeyLocalFromDate(d);
-  return { startMs, endMs, dk };
-}
 
 const PARTY_MAX_TOTAL = 8;
 const PARTY_UUID_RE =
@@ -1091,25 +1061,17 @@ function participantsFromIndex(index, raidType, slotKey) {
 /**
  * 알림 전송 기록이 무한히 쌓이지 않게 정리.
  * - 레이드: slot_key 날짜가 STATE_PRUNE_RAID_DAYS 일 이전이면 삭제
- * - 슈상보: sugo|…|yyyy-mm-dd|h 가 STATE_PRUNE_SUGO_DAYS 일 이전이면 삭제
+ * - `sugo|…` 레거시 키(구 슈상보 알림): 기능 제거 후 남은 항목 일괄 삭제
  */
 function pruneReminderState(state) {
   const now = Date.now();
   const raidCut = now - STATE_PRUNE_RAID_DAYS * 24 * 60 * 60 * 1000;
-  const sugoCut = now - STATE_PRUNE_SUGO_DAYS * 24 * 60 * 60 * 1000;
   const out = { ...state };
   let removed = 0;
   for (const key of Object.keys(out)) {
     if (key.startsWith("sugo|")) {
-      const parts = key.split("|");
-      if (parts.length >= 4) {
-        const day = parts[2]?.slice(0, 10);
-        const t0 = day && /^\d{4}-\d{2}-\d{2}$/.test(day) ? new Date(day + "T12:00:00").getTime() : NaN;
-        if (Number.isFinite(t0) && t0 < sugoCut) {
-          delete out[key];
-          removed++;
-        }
-      }
+      delete out[key];
+      removed++;
       continue;
     }
     if (key.startsWith("confirmSent|")) {
@@ -1139,7 +1101,7 @@ function pruneReminderState(state) {
     }
   }
   if (removed > 0) {
-    console.log(`[상태] 오래된 전송 기록 키 ${removed}개 제거 (raid≥${STATE_PRUNE_RAID_DAYS}일, sugo≥${STATE_PRUNE_SUGO_DAYS}일)`);
+    console.log(`[상태] 오래된 전송 기록 키 ${removed}개 제거 (raid≥${STATE_PRUNE_RAID_DAYS}일 · 레거시 sugo 키 포함)`);
   }
   return out;
 }
@@ -1255,17 +1217,6 @@ function buildSlashCommands() {
       )
       .toJSON(),
     new SlashCommandBuilder().setName("dice").setDescription("1~100 랜덤 주사위 (이 채널에 멘션)").toJSON(),
-    new SlashCommandBuilder()
-      .setName("sugo_ping")
-      .setDescription("슈고 상인 보호(슈상보) 짝수 시 xx:59~정각 직전 알림")
-      .addSubcommand((sc) =>
-        sc.setName("register").setDescription("이 텍스트 채널에서 슈상보 알림 받기 (본인만)"),
-      )
-      .addSubcommand((sc) => sc.setName("unregister").setDescription("슈상보 알림 해제 (본인만)"))
-      .addSubcommand((sc) =>
-        sc.setName("list").setDescription("이 서버 등록자 목록 (서버 관리 전용)"),
-      )
-      .toJSON(),
     new SlashCommandBuilder()
       .setName("party_recruit")
       .setDescription("파티 구인 (최대 8인 · 실행자가 파티장)")
@@ -1407,102 +1358,6 @@ async function handleDiceInteraction(interaction) {
     content: `🎲 ${tail} <@${uid}> 님, **${n}** (1~100) !`,
     allowedMentions: { users: [uid] },
   });
-}
-
-async function handleSugoPingInteraction(supabase, interaction) {
-  const sub = interaction.options.getSubcommand(true);
-  if (!interaction.inGuild()) {
-    await interaction.reply({ content: "서버 안에서만 사용할 수 있어요.", ephemeral: true });
-    return;
-  }
-  const gid = interaction.guildId;
-
-  if (sub === "register") {
-    const ch = interaction.channel;
-    if (!ch?.isTextBased?.()) {
-      await interaction.reply({ content: "메시지를 보낼 수 있는 채널(텍스트·스레드 등)에서만 등록할 수 있어요.", ephemeral: true });
-      return;
-    }
-    const { error } = await supabase.from("discord_sugo_merchant_subscribers").upsert(
-      {
-        guild_id: gid,
-        channel_id: interaction.channelId,
-        discord_user_id: interaction.user.id,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "guild_id,discord_user_id" },
-    );
-    if (error) throw error;
-    await interaction.reply({
-      content: [
-        "🛡️ **슈상보** 알림을 등록했어요. (본인만 가능)",
-        `· 알림 채널: <#${interaction.channelId}>`,
-        "· **짝수 시 xx:59 ~ 정각 직전**에 멘션 (로컬 **06·07·08시**는 제외)",
-        "· 같은 서버에서 다시 등록하면 **지금 채널**로 바뀌어요.",
-      ].join("\n"),
-      ephemeral: true,
-    });
-    return;
-  }
-
-  if (sub === "unregister") {
-    const { error } = await supabase
-      .from("discord_sugo_merchant_subscribers")
-      .delete()
-      .eq("guild_id", gid)
-      .eq("discord_user_id", interaction.user.id);
-    if (error) throw error;
-    await interaction.reply({ content: "슈상보 알림을 해제했어요.", ephemeral: true });
-    return;
-  }
-
-  if (sub === "list") {
-    const canManage = interaction.member?.permissions?.has?.(PermissionFlagsBits.ManageGuild);
-    if (!canManage) {
-      await interaction.reply({ content: "이 서브명령은 **서버 관리(Manage Server)** 권한이 있어야 해요.", ephemeral: true });
-      return;
-    }
-    const { data, error } = await supabase
-      .from("discord_sugo_merchant_subscribers")
-      .select("channel_id, discord_user_id, updated_at")
-      .eq("guild_id", gid)
-      .order("channel_id", { ascending: true });
-    if (error) throw error;
-    if (!data?.length) {
-      await interaction.reply({ content: "이 서버에 슈상보를 등록한 사람이 아직 없어요.", ephemeral: true });
-      return;
-    }
-    const byCh = new Map();
-    for (const r of data) {
-      const cid = String(r.channel_id ?? "");
-      if (!byCh.has(cid)) byCh.set(cid, []);
-      byCh.get(cid).push(r);
-    }
-    const lines = ["**슈상보 등록 현황** (이 서버)"];
-    const allUserIds = [];
-    for (const [cid, rows] of [...byCh.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      lines.push("");
-      lines.push(`📍 <#${cid}>`);
-      for (const r of rows) {
-        allUserIds.push(String(r.discord_user_id));
-        lines.push(`· <@${r.discord_user_id}> — 갱신 ${formatKo(new Date(r.updated_at))}`);
-      }
-    }
-    const mentionUsers = [...new Set(allUserIds)].slice(0, 100);
-    const chunks = chunkLines(lines);
-    await interaction.reply({
-      content: chunks[0],
-      ephemeral: true,
-      allowedMentions: { users: mentionUsers },
-    });
-    for (let i = 1; i < chunks.length; i++) {
-      await interaction.followUp({
-        content: chunks[i],
-        ephemeral: true,
-        allowedMentions: { users: mentionUsers },
-      });
-    }
-  }
 }
 
 function buildPartyEmbed(row) {
@@ -1896,7 +1751,7 @@ async function registerSlashCommandsOnAllGuilds(client) {
     try {
       await rest.put(Routes.applicationGuildCommands(appId, g.id), { body });
       console.log(
-        `[Discord] 슬래시 등록 (…·sugo_ping·party_recruit·remind): ${g.name} (${g.id})`,
+        `[Discord] 슬래시 등록 (…·party_recruit·remind): ${g.name} (${g.id})`,
       );
     } catch (e) {
       console.error(`[Discord] 슬래시 등록 실패 (${g.name} / ${g.id}):`, e?.rawError?.message ?? e?.message ?? e);
@@ -1912,7 +1767,7 @@ async function registerSlashCommandsForGuild(client, guildId, guildName = "") {
   const body = buildSlashCommands();
   await rest.put(Routes.applicationGuildCommands(appId, guildId), { body });
   console.log(
-    `[Discord] 슬래시 등록 (신규 서버 · …·sugo_ping): ${guildName || guildId} (${guildId})`,
+    `[Discord] 슬래시 등록 (신규 서버 · …·party_recruit): ${guildName || guildId} (${guildId})`,
   );
 }
 
@@ -2513,75 +2368,6 @@ async function runTick(client, supabase, state) {
   return nextState;
 }
 
-async function runSugoMerchantTick(client, supabase, state) {
-  const now = Date.now();
-  const d = new Date();
-
-  /** 짝수 시 정각 기준 — 로컬 **xx:59:00 이상 ~ 정각(00:00) 미만**에만 전송. 0시는 전날 23:59~24:00 → 달력 키는 해당 0시가 속한 날 */
-  let resolved = null;
-  for (const eventH of SUGO_MERCHANT_HOURS) {
-    const { startMs, endMs, dk } = sugoMerchantWindowBoundsLocal(eventH, d);
-    if (now >= startMs && now < endMs) {
-      resolved = { eventHour: eventH, dk };
-      break;
-    }
-  }
-  if (!resolved) return state;
-
-  const h = resolved.eventHour;
-  const dk = resolved.dk;
-  const { data, error } = await supabase.from("discord_sugo_merchant_subscribers").select("channel_id, discord_user_id");
-  if (error) throw error;
-
-  const byChannel = new Map();
-  for (const row of data ?? []) {
-    const cid = String(row.channel_id ?? "").trim();
-    if (!/^\d{5,30}$/.test(cid)) continue;
-    const uid = String(row.discord_user_id ?? "").trim();
-    if (!/^\d{5,30}$/.test(uid)) continue;
-    if (!byChannel.has(cid)) byChannel.set(cid, []);
-    byChannel.get(cid).push(uid);
-  }
-
-  let nextState = { ...state };
-  let any = false;
-
-  for (const [channelId, userIds] of byChannel) {
-    const unique = [...new Set(userIds)].slice(0, 100);
-    if (unique.length === 0) continue;
-
-    const flagKey = `sugo|${channelId}|${dk}|${h}`;
-    if (nextState[flagKey]) continue;
-
-    let ch;
-    try {
-      ch = await client.channels.fetch(channelId);
-    } catch {
-      continue;
-    }
-    if (!ch?.isTextBased?.()) continue;
-
-    const mentionLine = unique.map((id) => `<@${id}>`).join(" ");
-    const text = [
-      "🛡️ **슈고 상인 보호(슈상보)** 짝수 시 **정각 직전** 알림이야! (오전 6~8시 제외)",
-      `⏰ **${String(h).padStart(2, "0")}:00** 정각이 곧이에요`,
-      mentionLine,
-      "_상인님 조심히 다녀오세요~ ✨_",
-    ].join("\n");
-
-    await ch.send({
-      content: text,
-      allowedMentions: { users: unique },
-    });
-    nextState[flagKey] = new Date().toISOString();
-    any = true;
-    console.log(`[슈상보 전송] ${flagKey}`);
-  }
-
-  if (any) await saveState(nextState);
-  return any ? nextState : state;
-}
-
 async function main() {
   requireEnv("DISCORD_BOT_TOKEN", TOKEN);
   requireEnv("DISCORD_CHANNEL_ID", CHANNEL_ID);
@@ -2593,13 +2379,10 @@ async function main() {
     `[설정] TZ=${process.env.TZ ?? "(기본)"} STATE=${STATE_PATH} ALARM_STATE=${ALARM_STATE_PATH} POLL=${POLL_MS}ms 당일=${REMIND_DAY_HOUR}시 알림대상=${raidDesc} .env기본채널=${CHANNEL_ID}`,
   );
   console.log(
-    `[최적화] 레이드 알림=가능시간 1회 조회·인덱스 / 상태정리 raid≥${STATE_PRUNE_RAID_DAYS}일 sugo≥${STATE_PRUNE_SUGO_DAYS}일 / 전송 시에만 state 저장`,
+    `[최적화] 레이드 알림=가능시간 1회 조회·인덱스 / 상태정리 raid≥${STATE_PRUNE_RAID_DAYS}일 / 전송 시에만 state 저장`,
   );
   console.log(
     `[확정 직후 멘션] 최근 ${Math.round(CONFIRM_NOTIFY_MAX_AGE_MS / 60_000)}분 이내 확정만 전송 · CONFIRM_NOTIFY_MAX_AGE_MS 로 조정`,
-  );
-  console.log(
-    `[슈상보] 짝수 시 xx:59~정각 직전 멘션(06·07·08시 제외) — 대상 시각: ${[...SUGO_MERCHANT_HOURS].sort((a, b) => a - b).join(", ")}`,
   );
   if (MESSAGE_CONTENT_INTENTS_ENABLED) {
     console.log(
@@ -2666,7 +2449,6 @@ async function main() {
             "raid_my_schedule",
             "raid_overlap",
             "dice",
-            "sugo_ping",
             "party_recruit",
             "remind",
             "remind_cancel",
@@ -2681,8 +2463,6 @@ async function main() {
           await handleOverlapInteraction(supabase, interaction);
         } else if (cn === "dice") {
           await handleDiceInteraction(interaction);
-        } else if (cn === "sugo_ping") {
-          await handleSugoPingInteraction(supabase, interaction);
         } else if (cn === "remind") {
           await handleRemindInteraction(interaction);
         } else if (cn === "remind_cancel") {
@@ -2716,7 +2496,6 @@ async function main() {
       }
       state = await runScheduleConfirmNotifyTick(client, supabase, state);
       state = await runTick(client, supabase, state);
-      state = await runSugoMerchantTick(client, supabase, state);
       await runRemindOverdueSweep().catch((e) => console.error("[알람 스윕]", e?.message ?? e));
     } catch (e) {
       console.error("[틱 오류]", e?.message ?? e);
